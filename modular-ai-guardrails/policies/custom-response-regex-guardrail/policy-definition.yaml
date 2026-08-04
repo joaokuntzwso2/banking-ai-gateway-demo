@@ -1,0 +1,38 @@
+name: custom-response-regex-guardrail
+displayName: Custom Response Regex Guardrail
+version: v1.1.0
+description: >
+  Blocks assistant content matching a configurable RE2 expression. An optional
+  harmless request trigger provides a deterministic live demonstration without
+  depending on the model echoing a credential-shaped value.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    regex:
+      type: string
+      default: ""
+    demoMarker:
+      type: string
+      default: ""
+    demoTrigger:
+      type: string
+      default: ""
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    maxResponseBodySize:
+      type: integer
+      minimum: 1
+      default: 4194304
+    failClosedUnexpectedResponse:
+      type: boolean
+      default: true
+    showAssessment:
+      type: boolean
+      default: true
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

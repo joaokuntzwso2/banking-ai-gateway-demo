@@ -1,0 +1,23 @@
+name: custom-high-impact-decision-guardrail
+displayName: Custom High Impact Decision Guardrail
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    prohibitedDecisionRegex:
+      type: string
+      default: '(?i)(selecciona|elige|rechaza|contrata|rank|select).*(autom[aá]ticamente|automatically|mejor candidato|best candidate).*(edad|estado civil|situaci[oó]n familiar|condiciones m[eé]dicas|age|marital status|family status|medical conditions)'
+    approvedReviewRegex:
+      type: string
+      default: '(?i)(experiencia profesional|professional experience).*(recomendaci[oó]n preliminar|preliminary recommendation).*(revisi[oó]n humana|human review)'
+    maxBodySize:
+      type: integer
+      minimum: 1
+      default: 4194304
+    quarantineMessage:
+      type: string
+      default: 'Reply exactly with OK.'
+    showAssessment:
+      type: boolean
+      default: true

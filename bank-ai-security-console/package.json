@@ -1,0 +1,28 @@
+{
+  "name": "bank-ai-security-console",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,ui -c blue,green \"node --watch server/index.mjs\" \"vite\"",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.mjs",
+    "preview": "vite preview",
+    "test": "node --test server/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "lucide-react": "0.468.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "@vitejs/plugin-react": "4.5.2",
+    "concurrently": "9.1.2",
+    "typescript": "5.8.3",
+    "vite": "6.3.5"
+  },
+  "description": "Professional banking AI security console with modular guardrail and protected RAG demonstrations"
+}

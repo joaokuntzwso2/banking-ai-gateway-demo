@@ -1,0 +1,31 @@
+name: custom-response-output-safety-guardrail
+displayName: Custom Response Output Safety Guardrail
+version: v1.1.0
+description: >
+  Detects high-confidence unsafe output patterns before downstream applications
+  render or execute model content. It covers active HTML/JavaScript, destructive
+  SQL, shell execution, path traversal and external Markdown-image exfiltration.
+  Context-specific escaping and authorization remain responsibilities of the
+  consuming application.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    blockActiveHtml: { type: boolean, default: true }
+    blockDestructiveSql: { type: boolean, default: true }
+    blockShellExecution: { type: boolean, default: true }
+    blockPathTraversal: { type: boolean, default: true }
+    blockExternalMarkdownImages: { type: boolean, default: true }
+    maxRequestBodySize: { type: integer, minimum: 1, default: 1048576 }
+    maxResponseBodySize: { type: integer, minimum: 1, default: 4194304 }
+    failClosedUnexpectedResponse: { type: boolean, default: true }
+    showAssessment: { type: boolean, default: true }
+    demoXssTrigger: { type: string, default: "WSO2-OUTPUT-XSS-DEMO-TRIGGER-7E3A9F" }
+    demoSqlTrigger: { type: string, default: "WSO2-OUTPUT-SQL-DEMO-TRIGGER-7E3A9F" }
+    demoShellTrigger: { type: string, default: "WSO2-OUTPUT-SHELL-DEMO-TRIGGER-7E3A9F" }
+    demoPathTraversalTrigger: { type: string, default: "WSO2-OUTPUT-PATH-DEMO-TRIGGER-7E3A9F" }
+    demoMarkdownExfiltrationTrigger: { type: string, default: "WSO2-OUTPUT-MARKDOWN-DEMO-TRIGGER-7E3A9F" }
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

@@ -1,0 +1,26 @@
+name: custom-resource-budget-guardrail
+displayName: Custom Resource Budget Guardrail
+version: v1.1.0
+description: >
+  Enforces request-size, prompt, output-token, tool-count and streaming budgets
+  to reduce unbounded consumption and denial-of-wallet risk. This policy is a
+  per-request budget control and complements distributed rate limits and quotas.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    maxRequestBodySize: { type: integer, minimum: 1, default: 1048576 }
+    maxMessages: { type: integer, minimum: 1, default: 32 }
+    maxPromptCharacters: { type: integer, minimum: 1, default: 32000 }
+    maxOutputTokens: { type: integer, minimum: 1, default: 2048 }
+    maxTools: { type: integer, minimum: 0, default: 8 }
+    allowStreaming: { type: boolean, default: false }
+    allowLogprobs: { type: boolean, default: false }
+    applyDefaultOutputTokenLimit: { type: boolean, default: true }
+    quarantineModel: { type: string, default: "gpt-4o-mini" }
+    quarantineMessage: { type: string, default: "Reply exactly with OK." }
+    showAssessment: { type: boolean, default: true }
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

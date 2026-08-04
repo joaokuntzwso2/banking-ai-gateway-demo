@@ -1,0 +1,20 @@
+name: custom-reliance-guardrail
+displayName: Custom Excessive Reliance Guardrail
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    blockedRelianceRegex:
+      type: string
+      default: '(?i)(respuesta definitiva|definitive answer).*(aunque no exista evidencia|without evidence)|(no menciones incertidumbre|do not mention uncertainty)|(no solicites revisi[oó]n|do not request review)'
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineMessage:
+      type: string
+      default: 'Reply exactly with OK.'
+    showAssessment:
+      type: boolean
+      default: true

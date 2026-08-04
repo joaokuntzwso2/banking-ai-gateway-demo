@@ -1,0 +1,25 @@
+name: custom-prompt-decorator
+displayName: Custom Prompt Decorator
+version: v1.0.0
+description: >
+  Adds a configured system message to OpenAI-compatible chat-completions
+  requests. It skips requests already quarantined by an earlier request policy.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    systemMessage:
+      type: string
+      default: ""
+    promptPlacement:
+      type: string
+      enum: [prepend, append]
+      default: prepend
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

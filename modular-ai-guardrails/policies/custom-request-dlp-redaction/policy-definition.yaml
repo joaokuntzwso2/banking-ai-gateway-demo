@@ -1,0 +1,29 @@
+name: custom-request-dlp-redaction
+displayName: Custom Request DLP Redaction
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    replacement:
+      type: string
+      default: '*****'
+    redactEmail:
+      type: boolean
+      default: true
+    redactPhone:
+      type: boolean
+      default: true
+    redactPaymentCard:
+      type: boolean
+      default: true
+    redactIBAN:
+      type: boolean
+      default: true
+    redactSecrets:
+      type: boolean
+      default: true
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576

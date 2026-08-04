@@ -1,0 +1,35 @@
+name: custom-model-allowlist-guardrail
+displayName: Custom Model Allowlist Guardrail
+version: v1.0.0
+description: >
+  Enforces an explicit allowlist of approved model identifiers before an LLM
+  request is sent upstream. This reduces model-routing typosquatting and
+  unapproved model or provider substitutions. Rejected requests are quarantined
+  and finalized as HTTP 422 by custom-request-block-finalizer.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    allowedModels:
+      type: string
+      default: "gpt-4o-mini"
+    requireModel:
+      type: boolean
+      default: true
+    quarantineModel:
+      type: string
+      default: "gpt-4o-mini"
+    quarantineMessage:
+      type: string
+      default: "Reply exactly with OK."
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    showAssessment:
+      type: boolean
+      default: true
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

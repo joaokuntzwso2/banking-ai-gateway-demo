@@ -1,0 +1,19 @@
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: LlmProxy
+metadata:
+  name: customer-ai-secure
+spec:
+  displayName: Customer AI Secure
+  version: v1.0
+  context: /customer-ai-secure
+  provider:
+    id: openai-provider
+  policies:
+    - name: api-key-auth
+      version: v1
+      paths:
+        - path: /*
+          methods: ["*"]
+          params:
+            in: header
+            key: Authorization

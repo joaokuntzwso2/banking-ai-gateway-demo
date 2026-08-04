@@ -1,0 +1,36 @@
+name: custom-response-json-schema-guardrail
+displayName: Custom Response JSON Schema Guardrail
+version: v1.0.0
+description: >
+  Validates the full response, assistant message, or decoded assistant content
+  against a configured JSON Schema. Enforcement can be conditional on the
+  caller requesting structured JSON.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    responseSchema:
+      type: string
+      default: ""
+    responseSchemaTarget:
+      type: string
+      enum: [content-json, message, response]
+      default: content-json
+    schemaEnforcementMode:
+      type: string
+      enum: [always, when-requested, when-json, disabled]
+      default: when-requested
+    maxResponseBodySize:
+      type: integer
+      minimum: 1
+      default: 4194304
+    failClosedUnexpectedResponse:
+      type: boolean
+      default: true
+    showAssessment:
+      type: boolean
+      default: true
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

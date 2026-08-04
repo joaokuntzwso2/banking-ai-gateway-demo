@@ -1,0 +1,229 @@
+openapi: 3.0.3
+info:
+  title: Aurelius Bank Protected Knowledge Ingestion API
+  version: 2.2.0
+  description: |
+    Tenant-aware document and email ingestion with JWT validation, provenance,
+    required local-demo signing, DLP redaction, indirect-injection classification,
+    quarantine, protected RAG retrieval, and trace-level evaluations.
+servers:
+  - url: http://host.docker.internal:4174/protected-ingestion
+security:
+  - bearerAuth: []
+paths:
+  /v1/documents:
+    post:
+      operationId: ingestDocument
+      summary: Validate and ingest a tenant-scoped knowledge document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Document'
+      responses:
+        '201':
+          description: Document accepted into authorized knowledge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestionDecision' }
+        '202':
+          description: Document quarantined before indexing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestionDecision' }
+        '400': { description: Invalid ingestion payload }
+        '401': { description: Missing, expired, or invalid JWT }
+        '403': { description: JWT tenant claim does not match the resource tenant }
+        '429': { description: Per-tenant ingestion rate limit exceeded }
+  /v1/emails:
+    post:
+      operationId: ingestEmail
+      summary: Validate and ingest a tenant-scoped email resource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Email'
+      responses:
+        '201':
+          description: Email accepted into authorized knowledge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestionDecision' }
+        '202':
+          description: Email quarantined before indexing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestionDecision' }
+        '400': { description: Invalid email payload }
+        '401': { description: Missing, expired, or invalid JWT }
+        '403': { description: JWT tenant claim does not match the email tenant }
+        '429': { description: Per-tenant email-ingestion rate limit exceeded }
+  /v1/files:
+    post:
+      operationId: ingestKnowledgeFile
+      summary: Inspect and ingest a tenant-scoped UTF-8 knowledge file
+      description: |
+        The public route accepts only a strict text-file allowlist. Publisher trust
+        is derived from the verified JWT tenant and an optional trusted document
+        signature; the upload-channel header is not an authorization mechanism.
+        PDF, Office, archives, executables, binary content, invalid UTF-8, and
+        filename traversal fail closed until a sandboxed parser and malware/CDR
+        pipeline are integrated.
+      parameters:
+        - in: header
+          name: X-Tenant-Id
+          required: true
+          schema: { type: string, enum: [tenant-a, tenant-b] }
+        - in: header
+          name: X-File-Name
+          required: true
+          schema: { type: string, maxLength: 180 }
+        - in: header
+          name: X-File-Content-Type
+          required: true
+          schema: { type: string, enum: [text/plain, text/markdown, application/json, text/csv] }
+        - in: header
+          name: X-Document-Id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: X-Source
+          required: false
+          schema: { type: string, default: customer-upload }
+        - in: header
+          name: X-Source-Version
+          required: false
+          schema: { type: string }
+        - in: header
+          name: X-Content-Sha256
+          required: false
+          schema: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+        - in: header
+          name: X-Signature-Key-Id
+          required: false
+          schema: { type: string }
+        - in: header
+          name: X-Signature
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201': { description: File accepted into authorized knowledge }
+        '202': { description: File quarantined before indexing }
+        '400': { description: Invalid filename, metadata, or text content }
+        '401': { description: Missing, expired, or invalid JWT }
+        '403': { description: JWT tenant claim does not match X-Tenant-Id }
+        '413': { description: File exceeds the configured byte limit }
+        '415': { description: Unsupported extension, MIME type, magic bytes, binary content, or invalid UTF-8 }
+        '429': { description: Per-tenant ingestion rate limit exceeded }
+  /v1/query:
+    post:
+      operationId: queryProtectedKnowledge
+      summary: Query only accepted knowledge authorized for the JWT tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProtectedQuery'
+      responses:
+        '200':
+          description: Protected RAG answer and evaluation evidence
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResult' }
+        '400': { description: Invalid query }
+        '401': { description: Missing, expired, or invalid JWT }
+        '403': { description: JWT tenant mismatch or unsafe simulation disabled }
+        '429': { description: Per-tenant query rate limit exceeded }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Signature:
+      type: object
+      required: [keyId, value]
+      properties:
+        keyId: { type: string }
+        value:
+          type: string
+          description: Hex-encoded HMAC-SHA256 over the original content for the local signing demo.
+    Document:
+      type: object
+      required: [tenantId, documentId, source, sourceVersion, sha256, signature, content]
+      properties:
+        tenantId: { type: string, enum: [tenant-a, tenant-b] }
+        documentId: { type: string }
+        source: { type: string }
+        sourceVersion: { type: string }
+        owner: { type: string }
+        sha256: { type: string }
+        signature: { $ref: '#/components/schemas/Signature' }
+        content: { type: string, maxLength: 100000 }
+    Email:
+      type: object
+      required: [tenantId, messageId, sender, subject, content]
+      properties:
+        tenantId: { type: string, enum: [tenant-a, tenant-b] }
+        messageId: { type: string }
+        sender: { type: string, format: email }
+        subject: { type: string }
+        sourceVersion: { type: string, default: email }
+        owner: { type: string }
+        sha256: { type: string }
+        signature: { $ref: '#/components/schemas/Signature' }
+        content: { type: string, maxLength: 100000 }
+    ProtectedQuery:
+      type: object
+      required: [tenantId, question]
+      properties:
+        tenantId: { type: string, enum: [tenant-a, tenant-b] }
+        question: { type: string, minLength: 3 }
+        mode:
+          type: string
+          enum: [protected, ungrounded-simulation, unsafe-quarantine-bypass]
+          description: Unsafe bypass is disabled on public routes unless explicitly enabled by an operator; the UI uses a server-internal demonstration override.
+          default: protected
+    IngestionDecision:
+      type: object
+      required: [decision, classification, resourceType, resourceId, tenantId, reasons]
+      properties:
+        decision: { type: string, enum: [ACCEPT, QUARANTINE] }
+        classification: { type: string }
+        resourceType: { type: string, enum: [document, email, file] }
+        resourceId: { type: string }
+        documentId: { type: string }
+        messageId: { type: string }
+        tenantId: { type: string }
+        reasons:
+          type: array
+          items: { type: string }
+        provenance: { type: object, additionalProperties: true }
+        dlp: { type: object, additionalProperties: true }
+        contradiction: { type: object, additionalProperties: true }
+        storedCollection: { type: string }
+        traceId: { type: string }
+    QueryResult:
+      type: object
+      properties:
+        answer: { type: string }
+        tenantId: { type: string }
+        mode: { type: string }
+        retrievedContext:
+          type: array
+          items: { type: object, additionalProperties: true }
+        evaluations: { type: object, additionalProperties: true }
+        securityConclusion: { type: string }
+        trace: { type: object, additionalProperties: true }

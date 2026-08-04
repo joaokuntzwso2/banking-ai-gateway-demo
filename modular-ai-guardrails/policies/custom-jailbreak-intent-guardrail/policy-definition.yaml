@@ -1,0 +1,26 @@
+name: custom-jailbreak-intent-guardrail
+displayName: Custom Jailbreak Intent Guardrail
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    systemPromptExtractionRegex:
+      type: string
+      default: '(?i)(imprime|muestra|repite|expone|revela).*(texto privado|reglas internas|instrucciones ocultas|prompt de sistema|system prompt)'
+    professionalAuthorityRegex:
+      type: string
+      default: '(?i)(auditor|director|administrador|regulador|cumplimiento).*(autorizad[oa]|senior|directorio).*(omitir|ignorar|eludir|bypass).*(pol[ií]ticas|reglas|controles|instrucciones)'
+    personaSwitchRegex:
+      type: string
+      default: '(?i)(a partir de ahora|from now on).*(DAN|administrador sin restricciones|unrestricted administrator|sin restricciones)'
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineMessage:
+      type: string
+      default: 'Reply exactly with OK.'
+    showAssessment:
+      type: boolean
+      default: true

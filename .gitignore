@@ -1,0 +1,250 @@
+# =============================================================================
+# Banking AI Gateway Demo
+
+# -----------------------------------------------------------------------------
+# Credentials, secrets and environment files
+.env
+.env.*
+*.env
+*.env.*
+# Sanitized environment templates may be committed
+!*.env.example
+!*.env.sample
+!*.env.template
+# Local application configuration containing credentials
+/wso2apip-ai-gateway-1.1.0/configs/config.toml
+# Generated WSO2/API subscription keys
+**/*api-key*.json
+**/*apikey*.json
+**/*-key.json
+**/*-key-*.json
+**/*access-token*.json
+**/*refresh-token*.json
+**/*credentials*.json
+**/*credential*.json
+**/*service-account*.json
+**/*private-key*.json
+**/*private_key*.json
+**/*secret*.json
+**/keys.json
+**/tokens.json
+# Secret and credential directories
+secrets/
+.secret/
+.secrets/
+credentials/
+.credential/
+.credentials/
+# Package manager and local authentication files
+.npmrc
+.netrc
+.pypirc
+auth.json
+**/.docker/config.json
+**/.aws/credentials
+**/.kube/config
+# Private keys, keystores and signing material
+*.key
+*.pem
+*.p12
+*.pfx
+*.pkcs12
+*.jks
+*.keystore
+*.truststore
+*.der
+*.csr
+*.srl
+# SSH private keys
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+# Node.js, React, TypeScript and Vite
+node_modules/
+bower_components/
+dist/
+build/
+out/
+.vite/
+.cache/
+.parcel-cache/
+.turbo/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+# Go build outputs
+bin/
+pkg/
+*.test
+*.prof
+*.pprof
+coverage.out
+*.wasm
+*.so
+*.dylib
+*.dll
+*.exe
+# Keep Go dependency metadata
+!go.mod
+!go.sum
+# Logs, traces, process files and crash dumps
+logs/
+log/
+*.log
+*.log.*
+*.out
+*.err
+*.pid
+*.pid.lock
+*.seed
+*.stackdump
+nohup.out
+hs_err_pid*
+# WSO2 runtime logs and temporary files
+**/repository/logs/
+**/repository/tmp/
+**/repository/cache/
+# Temporary and generated files
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.cache
+*.swp
+*.swo
+*.swn
+*~
+.#*
+#*#
+# Backups, snapshots and old copies
+/bank-ai-security-console.before-rag/
+*.before-*
+*.bak
+*.backup
+*.old
+*.orig
+*.original
+*.save
+*.copy
+*.rej
+backup/
+backups/
+_backup/
+_backups/
+# Archives and packaged distributions
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tar.xz
+*.7z
+*.rar
+# Explicitly ignore the downloaded WSO2 distribution archive
+/wso2apip-ai-gateway-1.1.0.zip
+# Runtime uploads and RAG data
+/bank-ai-security-console/data/*
+# Allow documentation or an empty-directory marker
+!/bank-ai-security-console/data/.gitkeep
+!/bank-ai-security-console/data/README.md
+uploads/
+uploaded-files/
+ingestion-data/
+vector-data/
+chroma-data/
+faiss-data/
+# Generated/private evidence
+/evidence/generated/
+/evidence/private/
+# Runtime databases and observability state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+**/prometheus/data/
+**/grafana/data/
+**/otel-data/
+**/fluent-bit/*.db
+**/fluent-bit/*.db.*
+docker-data/
+.docker-data/
+volumes/
+# IDE and editor configuration
+.vscode/
+.idea/
+*.iml
+.history/
+.project
+.classpath
+.settings/
+# Operating system files
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+Icon?
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+# Test output and HTTP captures
+test-results/
+playwright-report/
+blob-report/
+*.har
+*.trace
+*.pcap
+*.pcapng
+# Local overrides
+*.local
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.toml
+docker-compose.local.yml
+docker-compose.local.yaml
+docker-compose.override.local.yml
+docker-compose.override.local.yaml
+# Customer-ready local demo artifacts
+/demo-files/
+/wso2apip-ai-gateway-1.1.0/resources/listener-certs/default-listener.local.crt
+/wso2apip-ai-gateway-1.1.0/resources/listener-certs/default-listener.key
+# Generated gateway runtime snapshots — may contain provider authentication
+/wso2apip-ai-gateway-1.1.0/customer-ai-hardened-local.json
+/wso2apip-ai-gateway-1.1.0/customer-ai-secure-with-custom-policy.json
+# Customer-ready banking AI demo
+# Generated demonstration files
+/evidence/
+# Local console state
+/bank-ai-security-console/.env
+# Local gateway configuration and credentials
+/wso2apip-ai-gateway-1.1.0/configs/keys.env
+/wso2apip-ai-gateway-1.1.0/configs/embedding.env
+/wso2apip-ai-gateway-1.1.0/configs/*-key*.json
+/wso2apip-ai-gateway-1.1.0/configs/*api-key*.json
+# Generated runtime snapshots
+# Generated TLS private material
+# Downloaded distribution archive

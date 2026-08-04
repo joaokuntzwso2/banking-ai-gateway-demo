@@ -1,0 +1,17 @@
+name: custom-request-block-finalizer
+displayName: Custom Request Block Finalizer
+version: v1.0.0
+description: >
+  Converts a pending request violation stored in shared policy metadata into a
+  downstream HTTP 422 response after the quarantined upstream request completes.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    showAssessment:
+      type: boolean
+      default: true
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

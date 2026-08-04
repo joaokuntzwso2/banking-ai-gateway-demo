@@ -1,0 +1,23 @@
+name: custom-sensitive-context-guardrail
+displayName: Custom Sensitive Context Guardrail
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    employeeIdentifierRegex:
+      type: string
+      default: '(?i)\bEMP-[0-9]{3,12}\b'
+    sensitiveContextRegex:
+      type: string
+      default: '(?i)(diagn[oó]stico|m[eé]dico|enfermedad|salud|hija|hijo|familia|family|medical|diagnosis|health)'
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineMessage:
+      type: string
+      default: 'Reply exactly with OK.'
+    showAssessment:
+      type: boolean
+      default: true

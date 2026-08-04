@@ -1,0 +1,64 @@
+name: custom-agent-tool-scope-guardrail
+displayName: Custom Agent Tool Scope Guardrail
+version: v1.1.0
+description: >
+  Enforces a tool allowlist, rejects tool-description poisoning, and validates
+  delegated scopes and human approvals for sensitive tool use. Production
+  authorization is read from the gateway SDK AuthContext populated by an
+  authentication/authorization policy. The optional HMAC-signed context is a
+  local demonstration bridge and is never accepted from the request body.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    allowedTools:
+      type: string
+      default: "get_account_summary,get_order_status,search_knowledge_base,create_support_case,transfer_funds"
+    sensitiveToolScopesJson:
+      type: string
+      default: "{\"transfer_funds\":\"payments:write\",\"refund_payment\":\"refunds:write\",\"close_account\":\"accounts:close\",\"change_beneficiary\":\"beneficiaries:write\"}"
+    requireApprovalForSensitive:
+      type: boolean
+      default: true
+    blockSuspiciousToolDescriptions:
+      type: boolean
+      default: true
+    allowSignedDemoContext:
+      type: boolean
+      default: true
+    demoContextHmacSecret:
+      type: string
+      minLength: 24
+    demoContextHeader:
+      type: string
+      default: "X-Aurelius-Delegation-Context"
+    demoSignatureHeader:
+      type: string
+      default: "X-Aurelius-Delegation-Signature"
+    expectedAudience:
+      type: string
+      default: "customer-ai-secure"
+    maxDemoContextAgeSeconds:
+      type: integer
+      minimum: 1
+      maximum: 3600
+      default: 120
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineModel:
+      type: string
+      default: "gpt-4o-mini"
+    quarantineMessage:
+      type: string
+      default: "Reply exactly with OK."
+    showAssessment:
+      type: boolean
+      default: true
+  required:
+    - demoContextHmacSecret
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

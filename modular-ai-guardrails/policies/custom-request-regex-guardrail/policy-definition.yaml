@@ -1,0 +1,28 @@
+name: custom-request-regex-guardrail
+displayName: Custom Request Regex Guardrail
+version: v1.0.0
+description: >
+  Evaluates the latest OpenAI-compatible user message against a configurable
+  RE2 expression. Detected requests are quarantined and finalized as HTTP 422
+  by custom-request-block-finalizer.
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    regex:
+      type: string
+      default: ""
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineMessage:
+      type: string
+      default: "Reply exactly with OK."
+    showAssessment:
+      type: boolean
+      default: true
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}

@@ -1,0 +1,23 @@
+name: custom-harmful-content-guardrail
+displayName: Custom Harmful Content Guardrail
+version: v1.0.0
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    selfHarmRegex:
+      type: string
+      default: '(?i)(quiero hacerme da[nñ]o|quiero lastimarme|I want to hurt myself|self[- ]harm)'
+    violenceRegex:
+      type: string
+      default: '(?i)(genera|escribe|redacta).*(amenaza violenta|violent threat|amenaza de violencia)'
+    maxRequestBodySize:
+      type: integer
+      minimum: 1
+      default: 1048576
+    quarantineMessage:
+      type: string
+      default: 'Reply exactly with OK.'
+    showAssessment:
+      type: boolean
+      default: true

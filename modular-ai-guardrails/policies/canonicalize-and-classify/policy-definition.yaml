@@ -1,0 +1,53 @@
+name: canonicalize-and-classify
+displayName: Canonicalize and Classify AI Content
+version: v1.0.0
+description: >
+  Canonicalizes OpenAI-compatible chat prompts by removing invisible
+  characters and recursively decoding URL-encoded, hexadecimal, and Base64
+  content. Blocks deterministic prompt-injection patterns before upstream
+  guardrails and the LLM provider are invoked.
+
+parameters:
+  type: object
+  additionalProperties: false
+  properties:
+    jsonPath:
+      type: string
+      title: Prompt JSON Path
+      description: >
+        Location of the latest user prompt in an OpenAI-compatible
+        chat-completions request.
+      default: "$.messages[-1].content"
+
+    maxBodySize:
+      type: integer
+      title: Maximum Request Body Size
+      description: Maximum accepted request-body size in bytes.
+      minimum: 1
+      default: 1048576
+
+    maxDecodedSize:
+      type: integer
+      title: Maximum Decoded Size
+      description: Maximum size of recursively decoded prompt content in bytes.
+      minimum: 1
+      default: 2097152
+
+    maximumDecodeDepth:
+      type: integer
+      title: Maximum Decode Depth
+      description: Maximum number of nested decoding operations.
+      minimum: 0
+      maximum: 5
+      default: 2
+
+    blockOnDetection:
+      type: boolean
+      title: Block Detected Injection
+      description: Return HTTP 422 when a prohibited pattern is detected.
+      default: true
+
+systemParameters:
+  type: object
+  additionalProperties: false
+  properties: {}
