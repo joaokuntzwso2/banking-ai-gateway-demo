@@ -248,3 +248,6 @@ docker-compose.override.local.yaml
 # Generated runtime snapshots
 # Generated TLS private material
 # Downloaded distribution archive
+
+# Generated local gateway certificate
+wso2apip-ai-gateway-1.1.0/resources/listener-certs/default-listener.crt
