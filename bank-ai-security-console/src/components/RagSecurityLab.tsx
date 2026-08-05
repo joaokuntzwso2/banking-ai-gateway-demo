@@ -75,7 +75,7 @@ export function RagSecurityLab() {
   const [queryResult, setQueryResult] = useState<{ body: RagQueryBody; trace: RagTrace } | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadTenant, setUploadTenant] = useState<'tenant-a' | 'tenant-b'>('tenant-a');
-  const [uploadChannel, setUploadChannel] = useState<'approved-publisher' | 'customer-upload'>('customer-upload');
+  const [uploadChannel, setUploadChannel] = useState<'approved-publisher' | 'customer-upload'>('approved-publisher');
   const [uploadingFile, setUploadingFile] = useState(false);
   const [fileUploadResult, setFileUploadResult] = useState<RagFileUploadResult | null>(null);
 

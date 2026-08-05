@@ -21,6 +21,12 @@ const app = express();
 const port = toInteger(process.env.PORT, 4174);
 const gatewayUrl = process.env.WSO2_GATEWAY_URL ?? 'https://localhost:8443/customer-ai-secure/chat/completions';
 const allowSelfSigned = toBoolean(process.env.WSO2_ALLOW_SELF_SIGNED, false);
+const demoMode = process.env.DEMO_MODE ?? 'standalone';
+const apiKeyHeader = (process.env.WSO2_API_KEY_HEADER ?? 'Authorization').trim();
+const apiKeyPrefix = process.env.WSO2_API_KEY_PREFIX ?? '';
+if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(apiKeyHeader)) {
+  throw new Error(`Invalid WSO2_API_KEY_HEADER: ${apiKeyHeader}`);
+}
 const requestTimeoutMs = toInteger(process.env.WSO2_REQUEST_TIMEOUT_MS, 30000);
 const defaultModel = process.env.WSO2_DEFAULT_MODEL ?? 'gpt-4o-mini';
 const demoDelegationContextSecret = process.env.DEMO_DELEGATION_CONTEXT_SECRET ?? 'aurelius-local-delegation-context-secret-change-me-2026';
@@ -79,7 +85,8 @@ app.get('/api/health', async (_req, res) => {
     apiKeyConfigured: currentSecureApiKey().length > 0,
     endpoint: maskEndpoint(endpoint),
     model: defaultModel,
-    environment: 'Local AI Gateway',
+    environment: demoMode === 'workspace' ? 'WSO2 AI Workspace' : 'Local AI Gateway',
+    apiKeyHeader,
     policies: [
       'api-key-auth',
       'custom-model-allowlist-guardrail',
@@ -121,6 +128,7 @@ app.post('/api/scenarios/:id/run', async (req, res) => {
       authMode: scenario.authMode,
       delegationContext: scenario.delegationContext ?? null,
       delegationSignatureMode: scenario.delegationSignatureMode ?? 'valid',
+      trustedContext: scenario.trustedContext ?? null,
     });
     const evaluation = evaluateScenario(scenario, result);
 
@@ -312,9 +320,40 @@ app.listen(port, () => {
   console.log(`Agent Manager OTLP export: ${process.env.AGENT_MANAGER_OTLP_ENDPOINT ? 'enabled' : 'disabled'}`);
 });
 
-async function invokeGateway({ payload, authMode, delegationContext = null, delegationSignatureMode = 'valid' }) {
+function addTrustedContext(payload, trustedContext) {
+  if (
+    typeof trustedContext !== 'string'
+    || trustedContext.trim().length === 0
+  ) {
+    return payload;
+  }
+
+  const messages = Array.isArray(payload.messages)
+    ? payload.messages
+    : [];
+
+  return {
+    ...payload,
+    messages: [
+      {
+        role: 'system',
+        content: trustedContext.trim(),
+      },
+      ...messages,
+    ],
+  };
+}
+
+async function invokeGateway({
+  payload,
+  authMode,
+  delegationContext = null,
+  delegationSignatureMode = 'valid',
+  trustedContext = null,
+}) {
   const endpoint = new URL(gatewayUrl);
-  const body = JSON.stringify(payload);
+  const effectivePayload = addTrustedContext(payload, trustedContext);
+  const body = JSON.stringify(effectivePayload);
   const correlationId = `BANK-UI-${crypto.randomUUID()}`;
   const headers = {
     'Content-Type': 'application/json',
@@ -329,9 +368,9 @@ async function invokeGateway({ payload, authMode, delegationContext = null, dele
     if (!secureApiKey) {
       throw new Error('WSO2_SECURE_API_KEY is not configured in .env');
     }
-    headers.Authorization = secureApiKey;
+    headers[apiKeyHeader] = `${apiKeyPrefix}${secureApiKey}`;
   } else if (authMode === 'invalid') {
-    headers.Authorization = 'invalid-bank-demo-key';
+    headers[apiKeyHeader] = `${apiKeyPrefix}invalid-bank-demo-key`;
   }
 
   if (delegationContext) {
@@ -360,11 +399,11 @@ async function invokeGateway({ payload, authMode, delegationContext = null, dele
       url: endpoint.toString(),
       headers: {
         'Content-Type': 'application/json',
-        Authorization:
+        [apiKeyHeader]:
           authMode === 'valid'
-            ? '[configured server-side]'
+            ? `[${apiKeyHeader} configured server-side]`
             : authMode === 'invalid'
-              ? 'invalid-bank-demo-key'
+              ? `${apiKeyPrefix}invalid-bank-demo-key`
               : '[omitted]',
         'X-Correlation-ID': correlationId,
         ...(delegationContext ? {
@@ -372,7 +411,10 @@ async function invokeGateway({ payload, authMode, delegationContext = null, dele
           'X-Aurelius-Delegation-Signature': '[HMAC redacted]',
         } : {}),
       },
-      body: payload,
+      body: effectivePayload,
+      trustedContext: trustedContext
+        ? '[trusted banking context injected server-side]'
+        : null,
       authMode,
     },
   };

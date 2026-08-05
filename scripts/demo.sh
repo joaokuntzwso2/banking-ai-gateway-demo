@@ -24,8 +24,10 @@ Commands:
   init              Create ignored local configuration, secrets, and TLS material
   build             Build custom gateway images and start the local runtime
   deploy-local      Initialize, build, create provider/proxy, apply policies, sync key
+  bootstrap-local   Create provider/proxy and apply policies without rebuilding images
   quickstart-local  Run deploy-local and start the console
-  workspace-config Configure the console for an AI Workspace Invoke URL and API key
+  workspace-config Configure and live-test an AI Workspace proxy
+  workspace-check  Re-test the saved AI Workspace endpoint and key
   start             Install/test dependencies and start BFF + Vite
   unit-test         Run Node tests
   gateway-test      Run live modular gateway acceptance tests
@@ -120,6 +122,35 @@ new_secret() {
   openssl rand -hex 32
 }
 
+tls_pair_matches() {
+  local cert_file="$1"
+  local key_file="$2"
+  local cert_hash key_hash
+
+  cert_hash="$(
+    openssl x509 \
+      -in "$cert_file" \
+      -pubkey \
+      -noout 2>/dev/null |
+    openssl pkey \
+      -pubin \
+      -outform DER 2>/dev/null |
+    shasum -a 256 |
+    awk '{print $1}'
+  )" || return 1
+
+  key_hash="$(
+    openssl pkey \
+      -in "$key_file" \
+      -pubout \
+      -outform DER 2>/dev/null |
+    shasum -a 256 |
+    awk '{print $1}'
+  )" || return 1
+
+  [[ -n "$cert_hash" && "$cert_hash" == "$key_hash" ]]
+}
+
 init_local() {
   for cmd in python3 openssl; do require "$cmd"; done
 
@@ -141,9 +172,9 @@ init_local() {
     "$GATEWAY_HOME/configs/embedding.env" \
     "$GATEWAY_HOME/configs/config.toml"
 
-  local cert="$GATEWAY_HOME/resources/listener-certs/default-listener.local.crt"
+  local cert="$GATEWAY_HOME/resources/listener-certs/default-listener.crt"
   local key="$GATEWAY_HOME/resources/listener-certs/default-listener.key"
-  if [[ ! -s "$cert" || ! -s "$key" ]]; then
+  if [[ ! -s "$cert" || ! -s "$key" ]] || ! tls_pair_matches "$cert" "$key"; then
     echo "Generating local self-signed TLS material..."
     openssl req \
       -x509 \
@@ -167,7 +198,7 @@ path = Path(sys.argv[1])
 text = path.read_text()
 text = text.replace(
     'cert_path = "./listener-certs/default-listener.crt"',
-    'cert_path = "./listener-certs/default-listener.local.crt"',
+    'cert_path = "./listener-certs/default-listener.crt"',
 )
 path.write_text(text)
 PY
@@ -212,7 +243,8 @@ PY
 
 doctor() {
   local failed=0
-  for cmd in git docker node npm ap go curl jq python3 openssl shasum; do
+  echo "Required tools:"
+  for cmd in git docker node npm ap curl jq python3 openssl shasum; do
     if command -v "$cmd" >/dev/null 2>&1; then
       printf '%-10s %s\n' "$cmd" "$(command -v "$cmd")"
     else
@@ -220,6 +252,14 @@ doctor() {
       failed=1
     fi
   done
+
+  echo
+  echo "Optional development tools:"
+  if command -v go >/dev/null 2>&1; then
+    printf '%-10s %s\n' "go" "$(command -v go)"
+  else
+    printf '%-10s %s\n' "go" "not installed (optional; gateway build uses Docker)"
+  fi
 
   echo
   echo "Required repository paths:"
@@ -473,39 +513,277 @@ EOF
 }
 
 deploy_local() {
-  init_local
+  : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before deploying standalone mode}"
   build_gateway
   bootstrap_local
 }
 
+bootstrap_existing_local() {
+  : "${OPENAI_API_KEY:?Set OPENAI_API_KEY before bootstrapping standalone mode}"
+  init_local
+  bootstrap_local
+}
+
+normalize_workspace_endpoint() {
+  python3 - "$1" <<'PY_ENDPOINT'
+from urllib.parse import urlparse, urlunparse
+import sys
+
+raw = sys.argv[1].strip().rstrip("/")
+lower = raw.lower()
+
+placeholders = (
+    "your-real-gateway-host",
+    "your-proxy-context",
+    "actual-gateway-host",
+    "actual-proxy-context",
+    "gateway-host",
+    "proxy-context",
+    "<",
+    ">",
+)
+
+if not raw:
+    raise SystemExit("AI Workspace Invoke URL cannot be empty.")
+
+if any(marker in lower for marker in placeholders):
+    raise SystemExit("Invoke URL contains a placeholder.")
+
+parsed = urlparse(raw)
+
+if parsed.scheme != "https":
+    raise SystemExit("AI Workspace Invoke URL must use https://")
+
+if not parsed.hostname:
+    raise SystemExit("AI Workspace Invoke URL has no valid hostname.")
+
+if parsed.username or parsed.password:
+    raise SystemExit("Do not embed credentials in the Invoke URL.")
+
+if parsed.query or parsed.fragment:
+    raise SystemExit(
+        "Do not include query parameters or fragments."
+    )
+
+endpoint_path = parsed.path.rstrip("/")
+
+if endpoint_path.endswith("/v1/chat/completions"):
+    pass
+elif endpoint_path.endswith("/chat/completions"):
+    endpoint_path = (
+        endpoint_path[:-len("/chat/completions")]
+        + "/v1/chat/completions"
+    )
+elif endpoint_path.endswith("/v1"):
+    endpoint_path += "/chat/completions"
+else:
+    endpoint_path += "/v1/chat/completions"
+
+print(
+    urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            endpoint_path,
+            "",
+            "",
+            "",
+        )
+    )
+)
+PY_ENDPOINT
+}
+
+workspace_probe() {
+  local endpoint="$1"
+  local key="$2"
+  local header_name="$3"
+  local header_prefix="$4"
+  local model="$5"
+  local allow_self_signed="$6"
+  local response_file error_file payload_file status
+  local -a tls_args=()
+
+  if [[ "$allow_self_signed" == "true" ]]; then
+    tls_args=(-k)
+  fi
+
+  response_file="$(mktemp)"
+  error_file="$(mktemp)"
+  payload_file="$(mktemp)"
+  chmod 600 "$response_file" "$error_file" "$payload_file"
+
+  cat > "$payload_file" <<JSON
+{
+  "model": "$model",
+  "temperature": 0,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly: WORKSPACE_OK"
+    }
+  ]
+}
+JSON
+
+  status="$(
+    curl -sS \
+      ${tls_args[@]+${tls_args[@]+${tls_args[@]+${tls_args[@]+"${tls_args[@]}"}}}} \
+      --connect-timeout 10 \
+      --max-time 90 \
+      -o "$response_file" \
+      -w '%{http_code}' \
+      -X POST "$endpoint" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json' \
+      -H "$header_name: ${header_prefix}${key}" \
+      --data-binary "@$payload_file" \
+      2>"$error_file" \
+      || true
+  )"
+
+  echo "AI Workspace probe: HTTP ${status:-000}"
+  echo "Endpoint: $endpoint"
+  echo "Authentication header: $header_name"
+  echo "Model: $model"
+  echo "Allow self-signed TLS: $allow_self_signed"
+
+  case "$status" in
+    2??)
+      echo "AI Workspace proxy, authentication, provider, and model invocation are working."
+      rm -f "$response_file" "$error_file" "$payload_file"
+      return 0
+      ;;
+    000|"")
+      echo "Network, DNS, or TLS connection failed:" >&2
+      cat "$error_file" >&2
+      ;;
+    401|403)
+      echo "Authentication failed." >&2
+      echo "Check the generated proxy key and the Security-tab key name/location." >&2
+      echo "AI Workspace defaults to X-API-Key in a request header." >&2
+      ;;
+    404)
+      echo "The gateway was reached, but the proxy/resource path was not found." >&2
+      echo "Copy the exact Invoke URL from the deployed App LLM Proxy Overview page." >&2
+      ;;
+    400|409|422)
+      echo "The gateway accepted the connection but rejected the request or a guardrail intervened." >&2
+      echo "Confirm the deployed model and policy configuration. Override AI_WORKSPACE_MODEL if needed." >&2
+      ;;
+    429)
+      echo "Authentication and routing likely succeeded, but a quota/rate limit blocked the probe." >&2
+      ;;
+    5??)
+      echo "The gateway or upstream LLM provider returned a server error." >&2
+      echo "Check provider deployment, provider credentials, gateway logs, and model availability." >&2
+      ;;
+    *)
+      echo "Unexpected response from AI Workspace." >&2
+      ;;
+  esac
+
+  echo "Response body:" >&2
+  if ! jq . "$response_file" >&2 2>/dev/null; then
+    cat "$response_file" >&2
+    echo >&2
+  fi
+
+  rm -f "$response_file" "$error_file" "$payload_file"
+  return 1
+}
+
 workspace_config() {
   require python3
-  init_local
-  : "${AI_WORKSPACE_INVOKE_URL:?Set AI_WORKSPACE_INVOKE_URL}"
-  : "${AI_WORKSPACE_API_KEY:?Set AI_WORKSPACE_API_KEY}"
+  require curl
+  require jq
 
-  full_endpoint="$(
-    python3 - "$AI_WORKSPACE_INVOKE_URL" <<'PY'
+  local invoke_url="${AI_WORKSPACE_INVOKE_URL:-}"
+  local api_key="${AI_WORKSPACE_API_KEY:-}"
+  local header_name="${AI_WORKSPACE_API_KEY_HEADER:-X-API-Key}"
+  local header_prefix="${AI_WORKSPACE_API_KEY_PREFIX:-}"
+  local model="${AI_WORKSPACE_MODEL:-gpt-4o-mini}"
+  local allow_self_signed="${AI_WORKSPACE_ALLOW_SELF_SIGNED:-false}"
+
+  if [[ -z "$invoke_url" ]]; then
+    read -r -p "AI Workspace Invoke URL: " invoke_url
+  fi
+
+  if [[ -z "$api_key" ]]; then
+    read -r -s -p "AI Workspace proxy API key: " api_key
+    echo
+  fi
+
+  [[ -n "$api_key" ]] || die "AI Workspace proxy API key cannot be empty."
+
+  python3 - "$header_name" <<'PY' \
+    || die "Invalid AI Workspace API-key header name: $header_name"
+import re
 import sys
-url = sys.argv[1].strip().rstrip("/")
-if url.endswith("/chat/completions"):
-    print(url)
-elif url.endswith("/v1"):
-    print(url + "/chat/completions")
-else:
-    print(url + "/v1/chat/completions")
+
+header_name = sys.argv[1]
+if not re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+", header_name):
+    raise SystemExit(1)
 PY
-  )"
+
+  [[ "$allow_self_signed" == "true" || "$allow_self_signed" == "false" ]] \
+    || die "AI_WORKSPACE_ALLOW_SELF_SIGNED must be true or false."
+
+  local full_endpoint
+  full_endpoint="$(normalize_workspace_endpoint "$invoke_url")" || exit 1
+
+  workspace_probe \
+    "$full_endpoint" \
+    "$api_key" \
+    "$header_name" \
+    "$header_prefix" \
+    "$model" \
+    "$allow_self_signed" \
+    || die "AI Workspace configuration was not saved because the live probe failed."
+
+  init_local
 
   set_env_values \
     "DEMO_MODE=workspace" \
     "WSO2_GATEWAY_URL=$full_endpoint" \
-    "WSO2_SECURE_API_KEY=$AI_WORKSPACE_API_KEY" \
-    "WSO2_ALLOW_SELF_SIGNED=false"
+    "WSO2_SECURE_API_KEY=$api_key" \
+    "WSO2_API_KEY_HEADER=$header_name" \
+    "WSO2_API_KEY_PREFIX=$header_prefix" \
+    "WSO2_DEFAULT_MODEL=$model" \
+    "WSO2_ALLOW_SELF_SIGNED=$allow_self_signed"
 
-  echo "AI Workspace console configuration written."
+  echo
+  echo "AI Workspace console configuration validated and written."
   echo "Endpoint: $full_endpoint"
-  echo "Key fingerprint: $(fingerprint "$AI_WORKSPACE_API_KEY")"
+  echo "Authentication header: $header_name"
+  echo "Model: $model"
+  echo "Allow self-signed TLS: $allow_self_signed"
+  echo "Key fingerprint: $(fingerprint "$api_key")"
+}
+
+workspace_check() {
+  require python3
+  require curl
+  require jq
+
+  [[ -f "$ENV_FILE" ]] || die "Console .env is missing. Run workspace-config."
+
+  local endpoint key header_name header_prefix model allow_self_signed
+  endpoint="$(env_value WSO2_GATEWAY_URL || true)"
+  key="$(env_value WSO2_SECURE_API_KEY || true)"
+  header_name="$(env_value WSO2_API_KEY_HEADER || true)"
+  header_prefix="$(env_value WSO2_API_KEY_PREFIX || true)"
+  model="$(env_value WSO2_DEFAULT_MODEL || true)"
+  allow_self_signed="$(env_value WSO2_ALLOW_SELF_SIGNED || true)"
+
+  [[ -n "$endpoint" ]] || die "WSO2_GATEWAY_URL is empty."
+  [[ -n "$key" ]] || die "WSO2_SECURE_API_KEY is empty."
+  [[ -n "$header_name" ]] || header_name="X-API-Key"
+  [[ -n "$model" ]] || model="gpt-4o-mini"
+  [[ -n "$allow_self_signed" ]] || allow_self_signed="false"
+
+  endpoint="$(normalize_workspace_endpoint "$endpoint")" || exit 1
+  workspace_probe "$endpoint" "$key" "$header_name" "$header_prefix" "$model" "$allow_self_signed"
 }
 
 start_console() {
@@ -528,6 +806,7 @@ start_console() {
   else
     [[ -n "$(env_value WSO2_SECURE_API_KEY || true)" ]] \
       || die "AI Workspace key is missing. Run workspace-config."
+    workspace_check
   fi
 
   cd "$CONSOLE_DIR"
@@ -668,8 +947,10 @@ case "$command" in
   init) init_local ;;
   build) build_gateway ;;
   deploy-local) deploy_local ;;
+  bootstrap-local) bootstrap_existing_local ;;
   quickstart-local) deploy_local; start_console ;;
   workspace-config) workspace_config ;;
+  workspace-check) workspace_check ;;
   start) start_console ;;
   unit-test) unit_test ;;
   gateway-test) gateway_test ;;
