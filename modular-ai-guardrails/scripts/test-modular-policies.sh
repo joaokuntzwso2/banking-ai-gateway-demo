@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROXY_URL="${PROXY_URL:-https://localhost:8443/customer-ai-secure/chat/completions}"
+PROXY_URL="${PROXY_URL:-https://localhost:8443/customer-ai-secure/v1/chat/completions}"
 MODEL="${MODEL:-gpt-4o-mini}"
+API_KEY_HEADER="${API_KEY_HEADER:-X-API-Key}"
 DEMO_DELEGATION_CONTEXT_SECRET="${DEMO_DELEGATION_CONTEXT_SECRET:-aurelius-local-delegation-context-secret-change-me-2026}"
 OUT="${OUT:-/tmp/wso2-modular-policy-tests}"
 mkdir -p "$OUT"
@@ -19,25 +20,52 @@ invoke() {
   local name="$1" request_file="$2" auth_mode="${3:-valid}" delegation_json="${4:-}" signature_mode="${5:-valid}"
   local auth=() delegation_headers=()
   case "$auth_mode" in
-    valid) auth=(-H "Authorization: ${WSO2_SECURE_API_KEY}") ;;
-    invalid) auth=(-H "Authorization: invalid-bank-demo-key") ;;
+    valid) auth=(-H "${API_KEY_HEADER}: ${WSO2_SECURE_API_KEY}") ;;
+    invalid) auth=(-H "${API_KEY_HEADER}: invalid-bank-demo-key") ;;
     none) auth=() ;;
     *) echo "Unsupported auth mode: $auth_mode" >&2; return 2 ;;
   esac
   if [[ -n "$delegation_json" ]]; then
-    local signed_context signed_signature
-    IFS=$'\t' read -r signed_context signed_signature < <(
+    local signed_context signed_signature signed_line
+    signed_line="$(
       python3 - "$delegation_json" "$DEMO_DELEGATION_CONTEXT_SECRET" <<'PYCTX'
 import base64, hashlib, hmac, json, secrets, sys, time
+
 context = json.loads(sys.argv[1])
 now = int(time.time())
-context.update({"aud": "customer-ai-secure", "iat": now, "exp": now + 90, "nonce": secrets.token_hex(12)})
-raw = json.dumps(context, separators=(",", ":"), sort_keys=True).encode()
+context.update({
+    "aud": "customer-ai-secure",
+    "iat": now,
+    "exp": now + 90,
+    "nonce": secrets.token_hex(12),
+})
+raw = json.dumps(
+    context,
+    separators=(",", ":"),
+    sort_keys=True,
+).encode()
 encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-signature = hmac.new(sys.argv[2].encode(), encoded.encode(), hashlib.sha256).hexdigest()
-print(f"{encoded}\t{signature}")
+signature = hmac.new(
+    sys.argv[2].encode(),
+    encoded.encode(),
+    hashlib.sha256,
+).hexdigest()
+print(encoded + "\t" + signature)
 PYCTX
-    )
+    )"
+
+    if [[ "$signed_line" != *$'\t'* ]]; then
+      echo "Delegation signer returned an invalid result." >&2
+      return 2
+    fi
+
+    signed_context="${signed_line%%$'\t'*}"
+    signed_signature="${signed_line#*$'\t'}"
+
+    if [[ -z "$signed_context" || -z "$signed_signature" ]]; then
+      echo "Delegation signer returned empty values." >&2
+      return 2
+    fi
     if [[ "$signature_mode" == "invalid" ]]; then
       local last_signature_character="${signed_signature#${signed_signature%?}}"
       if [[ "$last_signature_character" == "0" ]]; then
@@ -56,8 +84,8 @@ PYCTX
     -w 'HTTP_STATUS=%{http_code}\n' \
     -X POST "$PROXY_URL" \
     -H 'Content-Type: application/json' \
-    "${auth[@]}" \
-    "${delegation_headers[@]}" \
+    ${auth[@]+"${auth[@]}"} \
+    ${delegation_headers[@]+"${delegation_headers[@]}"} \
     --data-binary "@$request_file" \
     > "$OUT/$name.status"
 }

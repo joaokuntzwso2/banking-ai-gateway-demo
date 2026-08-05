@@ -4,7 +4,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -24,7 +24,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -58,7 +58,7 @@
           "maxDecodedSize": 2097152,
           "maximumDecodeDepth": 2
         },
-        "path": "/chat/completions"
+        "path": "/v1/chat/completions"
       }
     ],
     "version": "v1"
@@ -68,7 +68,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -88,7 +88,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -106,7 +106,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -127,7 +127,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -146,7 +146,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -165,7 +165,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -184,7 +184,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -202,7 +202,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -230,7 +230,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -247,7 +247,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -262,7 +262,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -283,7 +283,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -311,7 +311,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],
@@ -331,7 +331,7 @@
     "version": "v1",
     "paths": [
       {
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "methods": [
           "POST"
         ],

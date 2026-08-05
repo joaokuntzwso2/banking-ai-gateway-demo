@@ -10,6 +10,7 @@ ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 READY_ATTEMPTS="${READY_ATTEMPTS:-90}"
 READY_INTERVAL_SECONDS="${READY_INTERVAL_SECONDS:-2}"
+GENERATE_LOCAL_PROXY_KEY="${GENERATE_LOCAL_PROXY_KEY:-true}"
 CHAIN_FILE="$PACKAGE_ROOT/config/modular-policy-chain.json"
 DELEGATION_SECRET="${DEMO_DELEGATION_CONTEXT_SECRET:-aurelius-local-delegation-context-secret-change-me-2026}"
 EFFECTIVE_CHAIN="/tmp/modular-policy-chain-effective-$$.json"
@@ -132,47 +133,52 @@ if [[ "$chain_ready" != true ]]; then
   exit 1
 fi
 
-KEY_NAME="modular-policies-$STAMP"
-KEY_FILE="$GATEWAY_HOME/configs/${PROXY_ID}-modular-key-latest.json"
-umask 077
-jq -n --arg name "$KEY_NAME" '{name:$name}' > /tmp/modular-key-request.json
+if [[ "$GENERATE_LOCAL_PROXY_KEY" == "true" ]]; then
+  KEY_NAME="modular-policies-$STAMP"
+  KEY_FILE="$GATEWAY_HOME/configs/${PROXY_ID}-modular-key-latest.json"
+  umask 077
+  jq -n --arg name "$KEY_NAME" '{name:$name}' > /tmp/modular-key-request.json
 
-printf 'Generating a fresh proxy API key'
-key_ready=false
-for ((attempt=1; attempt<=30; attempt++)); do
-  if curl --fail-with-body -sS --max-time 5 \
-    -u "$ADMIN_USER:$ADMIN_PASSWORD" \
-    -X POST \
-    "$CONTROLLER_URL/api/management/v0.9/llm-proxies/$PROXY_ID/api-keys" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
-    --data-binary @/tmp/modular-key-request.json \
-    > "$KEY_FILE.tmp" 2>/dev/null \
-    && jq -e --arg proxy "$PROXY_ID" '
-      .status == "success"
-      and .apiKey.status == "active"
-      and .apiKey.apiId == $proxy
-      and (.apiKey.apiKey | type == "string" and length > 0)
-    ' "$KEY_FILE.tmp" >/dev/null; then
-    mv "$KEY_FILE.tmp" "$KEY_FILE"
-    key_ready=true
-    printf ' ready\n'
-    break
+  printf 'Generating a fresh proxy API key'
+  key_ready=false
+  for ((attempt=1; attempt<=30; attempt++)); do
+    if curl --fail-with-body -sS --max-time 5 \
+      -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+      -X POST \
+      "$CONTROLLER_URL/api/management/v0.9/llm-proxies/$PROXY_ID/api-keys" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json' \
+      --data-binary @/tmp/modular-key-request.json \
+      > "$KEY_FILE.tmp" 2>/dev/null \
+      && jq -e --arg proxy "$PROXY_ID" '
+        .status == "success"
+        and .apiKey.status == "active"
+        and .apiKey.apiId == $proxy
+        and (.apiKey.apiKey | type == "string" and length > 0)
+      ' "$KEY_FILE.tmp" >/dev/null; then
+      mv "$KEY_FILE.tmp" "$KEY_FILE"
+      key_ready=true
+      printf ' ready\n'
+      break
+    fi
+    printf '.'
+    sleep 2
+  done
+  rm -f "$KEY_FILE.tmp"
+
+  if [[ "$key_ready" != true ]]; then
+    printf '\nA fresh API key could not be generated.\n' >&2
+    exit 1
   fi
-  printf '.'
-  sleep 2
-done
-rm -f "$KEY_FILE.tmp"
 
-if [[ "$key_ready" != true ]]; then
-  printf '\nA fresh API key could not be generated.\n' >&2
-  exit 1
+  chmod 600 "$KEY_FILE"
+  KEY_FINGERPRINT="$(jq -er '.apiKey.apiKey' "$KEY_FILE" | shasum -a 256 | awk '{print substr($1,1,12)}')"
+  printf '\nFresh key created. Safe metadata:\n'
+  jq '{status,message,remainingApiKeyQuota,key:{name:.apiKey.name,status:.apiKey.status,apiId:.apiKey.apiId,length:(.apiKey.apiKey|length)}}' "$KEY_FILE"
+  printf 'fingerprint: %s\n' "$KEY_FINGERPRINT"
+  printf '\nSynchronize it into the UI with:\n'
+  printf 'cd %q && ./scripts/sync-api-key.sh\n' "$DEMO_HOME/bank-ai-security-console"
+else
+  printf '\nSkipped local proxy-key generation.\n'
+  printf 'Continue using the existing AI Workspace external key.\n'
 fi
-
-chmod 600 "$KEY_FILE"
-KEY_FINGERPRINT="$(jq -er '.apiKey.apiKey' "$KEY_FILE" | shasum -a 256 | awk '{print substr($1,1,12)}')"
-printf '\nFresh key created. Safe metadata:\n'
-jq '{status,message,remainingApiKeyQuota,key:{name:.apiKey.name,status:.apiKey.status,apiId:.apiKey.apiId,length:(.apiKey.apiKey|length)}}' "$KEY_FILE"
-printf 'fingerprint: %s\n' "$KEY_FINGERPRINT"
-printf '\nSynchronize it into the UI with:\n'
-printf 'cd %q && ./scripts/sync-api-key.sh\n' "$DEMO_HOME/bank-ai-security-console"
