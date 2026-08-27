@@ -1,10 +1,12 @@
 services:
   gateway-controller:
     image: ghcr.io/wso2/api-platform/wso2apip-ai-gateway-1.1.0-gateway-controller:1.1.0
+    restart: unless-stopped
     env_file:
       - ./configs/embedding.env
 
   gateway-runtime:
     image: ghcr.io/wso2/api-platform/wso2apip-ai-gateway-1.1.0-gateway-runtime:1.1.0
+    restart: unless-stopped
     env_file:
       - ./configs/embedding.env

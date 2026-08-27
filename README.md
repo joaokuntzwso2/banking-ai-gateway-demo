@@ -18,7 +18,7 @@ The demo shows how an enterprise can centrally register an AI Gateway, configure
 - [Prerequisites](#prerequisites)
 - [Deploy through WSO2 AI Workspace](#deploy-through-wso2-ai-workspace)
 - [Configure the security console](#configure-the-security-console)
-- [Start the UI](#start-the-ui)
+- [Start the application](#start-the-application)
 - [Run the tests](#run-the-tests)
 - [Protected RAG and file ingestion](#protected-rag-and-file-ingestion)
 - [Recommended customer demo flow](#recommended-customer-demo-flow)
@@ -141,8 +141,10 @@ flowchart LR
 ```text
 .
 ├── README.md
+├── run.sh
 ├── scripts/
-│   └── demo.sh
+│   ├── demo.sh
+│   └── run-demo.sh
 ├── bank-ai-security-console/
 │   ├── openapi/
 │   │   └── protected-ingestion.yaml
@@ -604,46 +606,83 @@ Delegation HMAC secret
 
 ---
 
-## Start the UI
+## Start the application
+
+### Recommended daily startup
 
 From the repository root:
 
 ```bash
-./scripts/demo.sh start
+./run.sh
 ```
 
-Or start the console directly:
+`run.sh` is the recommended entry point for the AI Workspace-connected demo. It is self-healing for repeated local demonstrations, including Docker/Colima restart, laptop sleep/wake, AI Workspace resynchronization, stale proxy API keys, delayed xDS key propagation, and a lost local policy attachment.
 
-```bash
-cd bank-ai-security-console
-npm run dev
+The startup automatically:
+
+1. Starts Colima when Docker is unavailable and Colima is installed.
+2. Starts the existing custom WSO2 AI Gateway Controller and Runtime images, rebuilding only when the images are missing or a rebuild is explicitly requested.
+3. Waits for the Gateway Controller and Runtime health endpoints.
+4. Waits for `enterprise-openai` and `customer-ai-secure` to synchronize from AI Workspace.
+5. Verifies the expected 19-policy chain: `api-key-auth`, the 17 repository guardrails, and `request-rewrite` last.
+6. Repairs the Workspace proxy from the repository when the policy chain or proxy-to-provider credential has been lost.
+7. Reuses the saved proxy API key when valid, or creates/regenerates and synchronizes a local proxy API key when stale.
+8. Waits for API-key and policy state to propagate to the Gateway Runtime over xDS; if necessary, it restarts only the Runtime to obtain a fresh snapshot.
+9. Requires the negative guardrail smoke test to return HTTP `422`.
+10. Requires the positive end-to-end OpenAI smoke test to return HTTP `200`.
+11. Starts the Node BFF and Vite UI only after the gateway path is healthy.
+
+On the first recovery that needs to rewrite the Workspace proxy, the script may ask once for the **AI Workspace provider access key** for `enterprise-openai`. This is not the OpenAI API key. It is stored locally in:
+
+```text
+wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env
 ```
 
-Open:
+Never commit that file or any other credential-bearing `.env` file.
+
+When startup succeeds, open:
 
 ```text
 http://127.0.0.1:5173/
 ```
 
-The BFF listens on:
+BFF health:
 
 ```text
-http://localhost:4174
+http://localhost:4174/api/health
 ```
 
-Health check:
+### Validate or recover without starting the UI
 
 ```bash
-curl -sS http://localhost:4174/api/health | jq
+./run.sh check
 ```
 
-Expected startup lines:
+This performs the same Gateway, Workspace, key, policy, negative, and positive checks but exits before starting the BFF/UI.
 
-```text
-Aurelius Bank AI Security API listening on http://localhost:4174
-Gateway target: https://localhost:8443/customer-ai-secure/v1/chat/completions
-API key configured: yes
+### Force a custom Gateway image rebuild
+
+Normal startup reuses the existing custom images. Rebuild after changing Go policy source or Gateway build configuration:
+
+```bash
+DEMO_FORCE_BUILD=true ./run.sh
 ```
+
+### Optional unit tests during startup
+
+```bash
+AUTO_RUN_UNIT_TESTS=true ./run.sh
+```
+
+### Legacy UI-only startup
+
+The original command remains available:
+
+```bash
+./scripts/demo.sh start
+```
+
+It assumes the Gateway, Workspace proxy, policy chain, and saved proxy API key are already healthy. Use `./run.sh` for normal daily operation.
 
 ---
 
@@ -981,7 +1020,13 @@ lsof -nP -iTCP:4174 -sTCP:LISTEN
 lsof -nP -iTCP:5173 -sTCP:LISTEN
 ```
 
-Start it with:
+Start or recover the complete demo with:
+
+```bash
+./run.sh
+```
+
+For UI-only startup when the Gateway is already healthy:
 
 ```bash
 cd bank-ai-security-console
@@ -1068,28 +1113,71 @@ The deterministic classifiers are intentionally transparent and repeatable for d
 
 ### Stop the UI and BFF
 
-Press `Ctrl+C` in the terminal running `npm run dev` or `./scripts/demo.sh start`.
+Press `Ctrl+C` in the terminal running `./run.sh`, `npm run dev`, or `./scripts/demo.sh start`.
 
-### Stop the connected gateway runtime
+### Stop the connected gateway while preserving local controller data
 
 ```bash
-cd wso2apip-ai-gateway-1.1.0
-
-docker compose \
-  -p ai-gateway \
-  --env-file configs/keys.env \
-  down
+./scripts/demo.sh stop
 ```
 
 This does not delete the AI Workspace provider, proxy, policies, keys, or gateway registration.
 
-### Remove local generated artifacts
+### Remove generated local artifacts only
 
 ```bash
 ./scripts/demo.sh clean
 ```
 
-Review the command output before deleting evidence needed for a customer demonstration.
+This removes generated evidence, build output, RAG state, and generated proxy-key JSON files. It does not remove the Gateway Compose volumes.
+
+### Fresh local clean
+
+Stop the foreground UI/BFF with `Ctrl+C`, then run:
+
+```bash
+./run.sh clean
+```
+
+This removes only the local `ai-gateway` Compose runtime state and generated demo artifacts:
+
+- Gateway Controller/Runtime containers for Compose project `ai-gateway`
+- Persisted Compose volumes for that project
+- Generated evidence, build output, RAG state, and generated proxy-key JSON files
+- Vite dependency cache
+
+It intentionally preserves:
+
+- AI Workspace provider, proxy, Gateway registration, and cloud-side resources
+- `wso2apip-ai-gateway-1.1.0/configs/keys.env`
+- `wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env`
+- `bank-ai-security-console/.env`
+- Custom Gateway images
+- Unrelated Docker Compose projects and containers
+
+This means cleaning the AI demo does not tear down other demos running at the same time.
+
+### Fresh clean and fresh start
+
+For a complete local runtime reset followed immediately by reconstruction and validation:
+
+```bash
+./run.sh fresh
+```
+
+This is the recommended recovery command when local Gateway state appears inconsistent. It removes the local Gateway containers/volumes, starts the stack again, waits for AI Workspace synchronization, restores/verifies the repository-managed 19-policy chain, synchronizes a working proxy key, validates HTTP `422` for the negative smoke test and HTTP `200` for the positive smoke test, and then starts the UI/BFF.
+
+To also remove and reinstall Node dependencies:
+
+```bash
+CLEAN_CONSOLE_DEPS=true ./run.sh fresh
+```
+
+To perform a clean start and rebuild the custom Gateway images as well:
+
+```bash
+DEMO_FORCE_BUILD=true ./run.sh fresh
+```
 
 ---
 
