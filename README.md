@@ -244,8 +244,8 @@ The setup uses several unrelated credentials. Do not substitute one for another.
 | **Gateway Registration Token** | AI Workspace → AI Gateways → Add AI Gateway | `wso2apip-ai-gateway-1.1.0/configs/keys.env` as `GATEWAY_REGISTRATION_TOKEN` | Gateway Controller connecting to AI Workspace |
 | **Control-plane host** | Gateway setup command shown by AI Workspace | `keys.env` as `GATEWAY_CONTROLPLANE_HOST` | Gateway Controller |
 | **OpenAI API key** | OpenAI account | AI Workspace LLM Provider credential field only | Provider calling OpenAI |
-| **Provider access key** | Generated in AI Workspace while binding the provider to the App LLM Proxy | Managed by AI Workspace; do not put it in the console `.env` | App LLM Proxy calling the internal provider resource |
-| **Proxy API key** | Generated for `customer-ai-secure` in AI Workspace | `bank-ai-security-console/.env` as `WSO2_SECURE_API_KEY` | Node BFF calling the proxy |
+| **Provider access key** | Created automatically by `./run.sh` through the local Gateway Controller with issuer `api-platform-devportal` | `wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env` | `customer-ai-secure` calling `enterprise-openai` |
+| **Proxy API key** | Created automatically by `./run.sh` through the local Gateway Controller with issuer `api-platform-devportal` | Generated key JSON plus `bank-ai-security-console/.env` as `WSO2_SECURE_API_KEY` | Node BFF calling `customer-ai-secure` |
 | **Delegation HMAC secret** | Generate locally once | AI Workspace policy parameter and `bank-ai-security-console/.env` | BFF and `custom-agent-tool-scope-guardrail` |
 | **Moesif key** | Moesif, optional | `keys.env` as `MOESIF_KEY` | Gateway analytics |
 
@@ -306,50 +306,53 @@ docker info
 
 ## Deploy through WSO2 AI Workspace
 
-### 1. Clone and enter the repository
+The recommended flow separates **one-time AI Workspace provisioning** from the repeatable local startup handled by `./run.sh`.
+
+### Starting point A — you already have a registered gateway
+
+If this workstation already has a valid gateway registration file, keep:
+
+```text
+wso2apip-ai-gateway-1.1.0/configs/keys.env
+```
+
+It must contain:
+
+```dotenv
+GATEWAY_CONTROLPLANE_HOST=<host-shown-by-ai-workspace>
+GATEWAY_REGISTRATION_TOKEN=<gateway-registration-token>
+MOESIF_KEY=
+```
+
+Do not copy old proxy/provider keys or another machine's console `.env`. The runner creates and synchronizes those locally.
+
+If an old registration token is rejected or the gateway cannot reconnect, use **Reconfigure** for that gateway in AI Workspace and replace the registration values in `configs/keys.env`.
+
+### Starting point B — the customer has never created an AI Gateway
+
+A gateway must exist and become **Active** before providers and proxies can be deployed to it.
+
+#### 1. Clone the repository
 
 ```bash
 git clone <customer-repository-url> banking-ai-gateway-demo
 cd banking-ai-gateway-demo
 ```
 
-### 2. Initialize and build the custom gateway images
+#### 2. Create the AI Gateway in AI Workspace
 
-```bash
-./scripts/demo.sh init
-./scripts/demo.sh build
-```
+In WSO2 API Platform:
 
-This compiles the 17 custom Go policies into the custom Controller and Runtime images referenced by the Compose override.
+1. Open **AI Workspace → AI Gateways**.
+2. Click **Add AI Gateway**.
+3. Create a gateway such as `banking-ai-security-gateway`.
+4. Use the URL appropriate for the environment; for this local demo the runtime listener is `https://localhost:8443` from the workstation itself.
+5. Copy the **Gateway Registration Token** when it is shown.
+6. Copy the **control-plane host/address** from the Get Started/setup instructions.
 
-### 3. Register the gateway in AI Workspace
+The registration token is a gateway credential. It is not the OpenAI key, provider access key, or proxy API key.
 
-In the WSO2 API Platform console:
-
-1. Open **AI Workspace**.
-2. Select **AI Gateways**.
-3. Click **Add AI Gateway**.
-4. Enter:
-
-   | Field | Recommended value |
-   |---|---|
-   | Name | `banking-ai-security-gateway` |
-   | URL | `https://<gateway-host>:8443` |
-   | Associated environment | The environment used for the demonstration |
-
-5. Add the gateway.
-6. Copy the **Gateway Registration Token** immediately.
-7. Copy the setup command or note the **control-plane host** shown by AI Workspace.
-
-The registration token is a gateway credential. It is not the OpenAI key and not the proxy API key.
-
-### 4. Create the ignored gateway registration file
-
-Create:
-
-```text
-wso2apip-ai-gateway-1.1.0/configs/keys.env
-```
+#### 3. Create the local gateway registration file
 
 ```bash
 cat > wso2apip-ai-gateway-1.1.0/configs/keys.env <<'ENVFILE'
@@ -361,254 +364,114 @@ ENVFILE
 chmod 600 wso2apip-ai-gateway-1.1.0/configs/keys.env
 ```
 
-Do not commit this file.
+Never commit this file.
 
-### 5. Start the connected gateway
+#### 4. Instantiate the registered local Gateway
 
-```bash
-cd wso2apip-ai-gateway-1.1.0
-
-docker compose \
-  -p ai-gateway \
-  --env-file configs/keys.env \
-  up -d \
-  --force-recreate \
-  --remove-orphans \
-  --pull never
-```
-
-Verify the runtime:
+Run:
 
 ```bash
-docker compose \
-  -p ai-gateway \
-  --env-file configs/keys.env \
-  ps
-
-curl -fsS http://localhost:9094/health
-curl -fsS http://localhost:9901/ready
+./run.sh gateway
 ```
 
-Return to AI Workspace. The gateway should change from **Inactive** to **Active**.
+This initializes local files, builds the custom Gateway images if they are missing, starts the `ai-gateway` Compose project, and waits for both Controller and Runtime health.
 
-### 6. Sync the 17 custom policies
+Return to AI Workspace and wait until `banking-ai-security-gateway` shows **Active**.
 
-In AI Workspace:
+#### 5. Make the 17 custom policies available
 
-1. Open **AI Gateways**.
-2. Select `banking-ai-security-gateway`.
-3. Open the **Policies** tab.
-4. Confirm that all 17 custom policy definitions appear.
-5. Click **Sync** for each custom policy not yet synchronized.
-6. Confirm they appear under **Settings → Custom Policies**.
-
-A custom policy must be synchronized to the organization before it can be attached to an LLM Provider or App LLM Proxy.
-
-### 7. Create the OpenAI LLM Provider
-
-In AI Workspace:
-
-1. Open **LLM → Service Provider** or **LLM Providers**.
-2. Click **Add New Provider**.
-3. Select the built-in **OpenAI** provider template.
-4. Configure:
-
-   | Field | Value |
-   |---|---|
-   | Name | `enterprise-openai` |
-   | Version | A version accepted by the current UI, such as `v1.0` |
-   | API key / Credential | The real OpenAI API key |
-
-5. Save the provider.
-6. Open **Access Control** and ensure `POST /chat/completions` is allowed.
-7. Click **Deploy to Gateway**.
-8. Select `banking-ai-security-gateway`.
-9. Wait until the provider deployment is active.
-
-The OpenAI API key remains in AI Workspace provider secret management. Do not put it in `bank-ai-security-console/.env`.
-
-### 8. Create the App LLM Proxy
-
-In AI Workspace:
-
-1. Open **App LLM Proxies**.
-2. Click **Create App LLM Proxy**.
-3. Configure:
-
-   | Field | Value |
-   |---|---|
-   | Name | `customer-ai-secure` |
-   | Display name | `Customer AI Secure` |
-   | Version | `v1.0` or the accepted UI value |
-   | Context | `customer-ai-secure` |
-   | Provider | `enterprise-openai` |
-   | Exposed resource | `POST /chat/completions` |
-
-4. Under provider configuration, generate or select the **provider access key** requested by AI Workspace.
-5. Create the proxy.
-
-The provider access key is platform-issued and allows the proxy to call the provider resource. AI Workspace should manage this binding. It is not the application-facing proxy API key.
-
-### 9. Configure inbound proxy authentication
-
-Open `customer-ai-secure` and select **Security**.
-
-Configure:
-
-| Setting | Value |
-|---|---|
-| Authentication | API key |
-| Location | Header |
-| Header name | `X-API-Key` |
-| Prefix | Empty |
-
-Save and redeploy the proxy.
-
-Generate an API key for the proxy. This is the **proxy API key** used by the Node BFF. It is normally displayed only when created and may have an expiration period configured by the platform.
-
-### 10. Configure the modular policy chain
-
-Use the parameters in:
+In the gateway's **Policies** area, synchronize any of this demo's 17 custom policy definitions that are not yet available to the organization. The custom Gateway build contains the policy implementations under:
 
 ```text
-modular-ai-guardrails/config/modular-policy-chain.json
+modular-ai-guardrails/policies/
 ```
 
-Attach all 17 custom policies to the original inbound path:
+#### 6. Create and deploy `enterprise-openai`
 
-```text
-POST /v1/chat/completions
-```
+In **AI Workspace → LLM Providers**:
 
-Use the exact order shown in [Policy chain](#policy-chain).
+1. Create an OpenAI provider named `enterprise-openai`.
+2. Configure the real OpenAI API key in the provider credential field.
+3. Allow the `POST /chat/completions` resource.
+4. Deploy the provider to `banking-ai-security-gateway`.
+5. Wait until the deployment is Active.
 
-Then add `request-rewrite` last with this path rewrite:
+The OpenAI credential stays in AI Workspace/provider configuration. Do not put it in the console `.env`.
 
-```json
-{
-  "pathRewrite": {
-    "type": "ReplaceFullPath",
-    "replaceFullPath": "/chat/completions"
-  }
-}
-```
+#### 7. Create and deploy `customer-ai-secure`
 
-Do not place `request-rewrite` before the guardrails.
+In **AI Workspace → LLM Proxies / App LLM Proxies**:
 
-### 11. Configure the shared delegation secret
+1. Create a proxy named `customer-ai-secure`.
+2. Select `enterprise-openai` as its provider.
+3. Use version `v1.0` (or the current accepted value).
+4. Use context `/customer-ai-secure`.
+5. Expose the OpenAI-compatible chat resource required by the demo.
+6. If the UI requires a provider access key during proxy creation, generate/select one to complete the Workspace resource creation.
+7. Deploy the proxy to `banking-ai-security-gateway`.
 
-Generate one secret:
+You do **not** need to manually build the final 19-policy runtime chain or manage the final local provider/proxy API keys. `./run.sh` validates and repairs those automatically.
+
+#### 8. Start the complete demo
 
 ```bash
-openssl rand -hex 32
+./run.sh
 ```
 
-Store the result securely. Use the same value in both places:
+The runner now automatically:
 
-1. AI Workspace → `customer-ai-secure` → `custom-agent-tool-scope-guardrail` → `demoContextHmacSecret`
-2. `bank-ai-security-console/.env` → `DEMO_DELEGATION_CONTEXT_SECRET`
-
-A mismatch causes:
-
-```text
-HTTP 422
-delegation context signature validation failed
-```
-
-### 12. Deploy the proxy
-
-Save all policies and deploy or redeploy `customer-ai-secure` to `banking-ai-security-gateway`.
-
-The expected invocation base is shown by AI Workspace. For the validated local runtime it is:
-
-```text
-https://localhost:8443/customer-ai-secure
-```
-
-The complete endpoint used by the BFF is:
-
-```text
-https://localhost:8443/customer-ai-secure/v1/chat/completions
-```
+1. Starts Docker/Colima and the registered Gateway.
+2. Waits for `enterprise-openai` and `customer-ai-secure` to synchronize from AI Workspace.
+3. Creates a provider access key with the required issuer `api-platform-devportal` when needed.
+4. Validates the provider directly through the Gateway.
+5. Repairs/verifies the expected 19-policy chain with `request-rewrite` last.
+6. Creates a proxy consumer key with the same required issuer.
+7. Synchronizes the proxy key into `bank-ai-security-console/.env`.
+8. Waits for xDS API-key/policy propagation and restarts only the Runtime once if necessary.
+9. Requires HTTP `422` for the negative guardrail test.
+10. Requires HTTP `200` for the positive OpenAI test.
+11. Starts the BFF and Vite UI only after the Gateway path is healthy.
 
 ---
-
 ## Configure the security console
 
-### Recommended configuration helper
+For the normal connected-Workspace flow, **do not configure the console manually**.
 
-From the repository root:
+`./scripts/demo.sh init`, which is called by `./run.sh`, creates the ignored local `.env` when necessary and generates the local delegation/RAG secrets. `./run.sh` then selects Workspace mode, sets the Gateway endpoint/header configuration, generates or recovers the correctly issued proxy key, and synchronizes that key into the console environment.
 
-```bash
-export AI_WORKSPACE_INVOKE_URL='https://localhost:8443/customer-ai-secure'
-export AI_WORKSPACE_API_KEY='<proxy-api-key-generated-for-customer-ai-secure>'
-export AI_WORKSPACE_ALLOW_SELF_SIGNED='true'
-export AI_WORKSPACE_API_KEY_HEADER='X-API-Key'
-export AI_WORKSPACE_API_KEY_PREFIX=''
-
-./scripts/demo.sh workspace-config
-```
-
-`AI_WORKSPACE_INVOKE_URL` is the proxy base URL. Do not append `/v1/chat/completions` when the helper already builds the complete endpoint.
-
-For a remote gateway with a trusted certificate:
-
-```bash
-export AI_WORKSPACE_INVOKE_URL='https://gateway.example.com/customer-ai-secure'
-export AI_WORKSPACE_ALLOW_SELF_SIGNED='false'
-```
-
-### Final console `.env`
-
-File:
+The resulting file is:
 
 ```text
 bank-ai-security-console/.env
 ```
 
-It should contain values equivalent to:
+It contains values equivalent to:
 
 ```dotenv
 DEMO_MODE=workspace
 WSO2_GATEWAY_URL=https://localhost:8443/customer-ai-secure/v1/chat/completions
-WSO2_SECURE_API_KEY=<proxy-api-key-generated-for-customer-ai-secure>
+WSO2_SECURE_API_KEY=<managed-locally-by-run.sh>
 WSO2_API_KEY_HEADER=X-API-Key
 WSO2_API_KEY_PREFIX=
 WSO2_DEFAULT_MODEL=gpt-4o-mini
 WSO2_ALLOW_SELF_SIGNED=true
-DEMO_DELEGATION_CONTEXT_SECRET=<same-value-configured-in-the-agent-guardrail>
+DEMO_DELEGATION_CONTEXT_SECRET=<generated-local-secret>
 ```
 
-Protect the file:
-
-```bash
-chmod 600 bank-ai-security-console/.env
-```
-
-Do not place these values in the browser, React environment variables, source files, or Git history.
-
-### Credential placement summary
+The provider access key used for proxy → provider communication is stored separately in:
 
 ```text
-OpenAI API key
-  → AI Workspace LLM Provider only
-
-Gateway Registration Token
-  → wso2apip-ai-gateway-1.1.0/configs/keys.env
-
-Proxy API key
-  → bank-ai-security-console/.env as WSO2_SECURE_API_KEY
-
-Delegation HMAC secret
-  → AI Workspace guardrail parameter
-  → bank-ai-security-console/.env
+wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env
 ```
 
----
+Both files are local-only and must never be committed.
 
+The legacy `./scripts/demo.sh workspace-config` helper remains available for manual troubleshooting or for a nonstandard remote gateway, but it is not required for the validated `./run.sh` startup.
+
+---
 ## Start the application
 
-### Recommended daily startup
+### Normal daily startup
 
 From the repository root:
 
@@ -616,31 +479,9 @@ From the repository root:
 ./run.sh
 ```
 
-`run.sh` is the recommended entry point for the AI Workspace-connected demo. It is self-healing for repeated local demonstrations, including Docker/Colima restart, laptop sleep/wake, AI Workspace resynchronization, stale proxy API keys, delayed xDS key propagation, and a lost local policy attachment.
+This is the recommended entry point. It recovers the Gateway, provider/proxy keys, 19-policy chain, xDS state, and console configuration before starting the UI/BFF.
 
-The startup automatically:
-
-1. Starts Colima when Docker is unavailable and Colima is installed.
-2. Starts the existing custom WSO2 AI Gateway Controller and Runtime images, rebuilding only when the images are missing or a rebuild is explicitly requested.
-3. Waits for the Gateway Controller and Runtime health endpoints.
-4. Waits for `enterprise-openai` and `customer-ai-secure` to synchronize from AI Workspace.
-5. Verifies the expected 19-policy chain: `api-key-auth`, the 17 repository guardrails, and `request-rewrite` last.
-6. Repairs the Workspace proxy from the repository when the policy chain or proxy-to-provider credential has been lost.
-7. Reuses the saved proxy API key when valid, or creates/regenerates and synchronizes a local proxy API key when stale.
-8. Waits for API-key and policy state to propagate to the Gateway Runtime over xDS; if necessary, it restarts only the Runtime to obtain a fresh snapshot.
-9. Requires the negative guardrail smoke test to return HTTP `422`.
-10. Requires the positive end-to-end OpenAI smoke test to return HTTP `200`.
-11. Starts the Node BFF and Vite UI only after the gateway path is healthy.
-
-On the first recovery that needs to rewrite the Workspace proxy, the script may ask once for the **AI Workspace provider access key** for `enterprise-openai`. This is not the OpenAI API key. It is stored locally in:
-
-```text
-wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env
-```
-
-Never commit that file or any other credential-bearing `.env` file.
-
-When startup succeeds, open:
+Open:
 
 ```text
 http://127.0.0.1:5173/
@@ -652,40 +493,41 @@ BFF health:
 http://localhost:4174/api/health
 ```
 
-### Validate or recover without starting the UI
+### Brand-new gateway only
+
+If the customer has just created an AI Gateway in AI Workspace and has not created the provider/proxy yet:
+
+```bash
+./run.sh gateway
+```
+
+Wait for the gateway to become Active in AI Workspace, create/deploy `enterprise-openai` and `customer-ai-secure`, then run:
+
+```bash
+./run.sh
+```
+
+### Validate/recover without starting the UI
 
 ```bash
 ./run.sh check
 ```
 
-This performs the same Gateway, Workspace, key, policy, negative, and positive checks but exits before starting the BFF/UI.
-
 ### Force a custom Gateway image rebuild
-
-Normal startup reuses the existing custom images. Rebuild after changing Go policy source or Gateway build configuration:
 
 ```bash
 DEMO_FORCE_BUILD=true ./run.sh
 ```
 
-### Optional unit tests during startup
+### Completely stop the local demo
 
 ```bash
-AUTO_RUN_UNIT_TESTS=true ./run.sh
+./run.sh stop
 ```
 
-### Legacy UI-only startup
-
-The original command remains available:
-
-```bash
-./scripts/demo.sh start
-```
-
-It assumes the Gateway, Workspace proxy, policy chain, and saved proxy API key are already healthy. Use `./run.sh` for normal daily operation.
+This stops both the UI/BFF and the `ai-gateway` Docker Compose project while preserving local Gateway volumes and AI Workspace resources.
 
 ---
-
 ## Run the tests
 
 ### Node tests
@@ -1015,6 +857,8 @@ Safe content is not equivalent to trusted provenance.
 
 ### UI is not running
 
+Check the listeners:
+
 ```bash
 lsof -nP -iTCP:4174 -sTCP:LISTEN
 lsof -nP -iTCP:5173 -sTCP:LISTEN
@@ -1026,12 +870,7 @@ Start or recover the complete demo with:
 ./run.sh
 ```
 
-For UI-only startup when the Gateway is already healthy:
-
-```bash
-cd bank-ai-security-console
-npm run dev
-```
+Use `./scripts/demo.sh start` only for legacy UI-only startup when the Gateway is already healthy.
 
 ### UI returns JSON instead of HTML
 
@@ -1111,76 +950,61 @@ The deterministic classifiers are intentionally transparent and repeatable for d
 
 ## Stopping and cleaning
 
-### Stop the UI and BFF
+### Fully stop everything locally and free the demo ports
 
-Press `Ctrl+C` in the terminal running `./run.sh`, `npm run dev`, or `./scripts/demo.sh start`.
-
-### Stop the connected gateway while preserving local controller data
+Use the normal stop command:
 
 ```bash
-./scripts/demo.sh stop
+./run.sh stop
 ```
 
-This does not delete the AI Workspace provider, proxy, policies, keys, or gateway registration.
+It:
 
-### Remove generated local artifacts only
+- stops the Node BFF and Vite UI;
+- brings down the Docker Compose project `ai-gateway`;
+- removes any leftover containers belonging to that Compose project;
+- verifies the core local demo ports are released;
+- preserves Docker volumes, including `controller-data`;
+- preserves `configs/keys.env`, `configs/workspace-secrets.env`, and `bank-ai-security-console/.env`;
+- does not delete or undeploy AI Workspace gateway/provider/proxy resources.
 
-```bash
-./scripts/demo.sh clean
+Core ports checked by the stop command are:
+
+```text
+4174 5173 8080 8081 8443 9002 9003 9090 9094 9011 9901
 ```
 
-This removes generated evidence, build output, RAG state, and generated proxy-key JSON files. It does not remove the Gateway Compose volumes.
+If an optional observability profile was started under the same `ai-gateway` Compose project, `docker compose down` removes those project containers as well.
 
-### Fresh local clean
-
-Stop the foreground UI/BFF with `Ctrl+C`, then run:
+### Stop and delete local Gateway runtime state
 
 ```bash
 ./run.sh clean
 ```
 
-This removes only the local `ai-gateway` Compose runtime state and generated demo artifacts:
+`clean` first stops the UI/BFF, then removes the `ai-gateway` containers **and volumes**, followed by generated demo artifacts. AI Workspace resources and ignored registration/secret files are preserved.
 
-- Gateway Controller/Runtime containers for Compose project `ai-gateway`
-- Persisted Compose volumes for that project
-- Generated evidence, build output, RAG state, and generated proxy-key JSON files
-- Vite dependency cache
-
-It intentionally preserves:
-
-- AI Workspace provider, proxy, Gateway registration, and cloud-side resources
-- `wso2apip-ai-gateway-1.1.0/configs/keys.env`
-- `wso2apip-ai-gateway-1.1.0/configs/workspace-secrets.env`
-- `bank-ai-security-console/.env`
-- Custom Gateway images
-- Unrelated Docker Compose projects and containers
-
-This means cleaning the AI demo does not tear down other demos running at the same time.
-
-### Fresh clean and fresh start
-
-For a complete local runtime reset followed immediately by reconstruction and validation:
+### Rebuild from a clean local state and start again
 
 ```bash
 ./run.sh fresh
 ```
 
-This is the recommended recovery command when local Gateway state appears inconsistent. It removes the local Gateway containers/volumes, starts the stack again, waits for AI Workspace synchronization, restores/verifies the repository-managed 19-policy chain, synchronizes a working proxy key, validates HTTP `422` for the negative smoke test and HTTP `200` for the positive smoke test, and then starts the UI/BFF.
-
-To also remove and reinstall Node dependencies:
-
-```bash
-CLEAN_CONSOLE_DEPS=true ./run.sh fresh
-```
-
-To perform a clean start and rebuild the custom Gateway images as well:
+To force the custom images to rebuild too:
 
 ```bash
 DEMO_FORCE_BUILD=true ./run.sh fresh
 ```
 
----
+The distinction is intentional:
 
+```text
+./run.sh stop   -> stop containers/processes, preserve local volumes/state
+./run.sh clean  -> stop + delete local Gateway volumes/generated artifacts
+./run.sh fresh  -> clean + reconstruct/validate/start the complete demo
+```
+
+---
 ## Further component documentation
 
 - `bank-ai-security-console/README.md`

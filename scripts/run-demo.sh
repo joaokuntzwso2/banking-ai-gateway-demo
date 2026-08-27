@@ -43,14 +43,16 @@ require() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1
 
 usage() {
   cat <<'EOF'
-Usage: ./run.sh [start|check|clean|fresh|help]
+Usage: ./run.sh [start|gateway|check|stop|clean|fresh|help]
 
 Commands:
-  start   Daily/self-healing startup (default): gateway, Workspace repair, smoke tests, UI/BFF
-  check   Run the same recovery and validation without starting the UI/BFF
-  clean   Remove only local AI Gateway runtime state and generated demo artifacts
-  fresh   Run clean, then perform a complete self-healing startup
-  help    Show this help
+  start    Daily/self-healing startup (default): gateway, Workspace repair, smoke tests, UI/BFF
+  gateway  Start/build only the registered Gateway so a brand-new AI Workspace gateway becomes Active
+  check    Run the same recovery and validation without starting the UI/BFF
+  stop     Fully stop UI/BFF and the ai-gateway Compose project; preserve volumes and Workspace resources
+  clean    Stop everything, remove local Gateway volumes, and remove generated demo artifacts
+  fresh    Run clean, then perform a complete self-healing startup
+  help     Show this help
 
 Useful environment variables:
   DEMO_FORCE_BUILD=true     Rebuild the custom Gateway images before starting
@@ -58,10 +60,13 @@ Useful environment variables:
   CLEAN_CONSOLE_DEPS=true   Also remove bank-ai-security-console/node_modules during clean
   API_KEY_ISSUER=value      Override the API-key issuer (default: api-platform-devportal)
 
-For a connected Workspace first run, keep configs/keys.env with the gateway registration
-host/token and deploy enterprise-openai + customer-ai-secure in AI Workspace. The runner
-creates correctly issued local provider/proxy keys, repairs the 19-policy chain, configures
-the console .env, waits for xDS, and validates 422/200 before starting the UI.
+For a brand-new AI Workspace gateway, create the gateway in AI Workspace first, copy the
+control-plane host and one-time registration token into configs/keys.env, then run:
+  ./run.sh gateway
+After the gateway is Active, create/deploy enterprise-openai and customer-ai-secure in
+AI Workspace, then run ./run.sh. The runner creates correctly issued local provider/proxy
+keys, repairs the 19-policy chain, configures the console .env, waits for xDS, and validates
+422/200 before starting the UI.
 
 The clean/fresh commands preserve AI Workspace cloud resources, gateway registration
 configuration, bank-ai-security-console/.env, and the locally saved provider access key.
@@ -867,13 +872,151 @@ ensure_console_dependencies() {
   fi
 }
 
-clean_local_runtime() {
-  ensure_docker
-
-  if curl -fsS --max-time 2 http://127.0.0.1:4174/api/health >/dev/null 2>&1 \
-    || curl -fsS --max-time 2 http://127.0.0.1:5173/ >/dev/null 2>&1; then
-    die "UI/BFF are still running. Stop the ./run.sh terminal with Ctrl+C, then run clean/fresh again."
+listener_pids_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser "$port"/tcp 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' || true
   fi
+}
+
+process_cwd() {
+  local pid="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+  fi
+}
+
+stop_console_processes() {
+  local port pid cwd command pids=""
+  for port in 4174 5173; do
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      case " $pids " in
+        *" $pid "*) ;;
+        *) pids="${pids:+$pids }$pid" ;;
+      esac
+    done < <(listener_pids_for_port "$port")
+  done
+
+  if [[ -z "$pids" ]]; then
+    ok "UI/BFF are not listening on ports 4174/5173"
+    return 0
+  fi
+
+  log "Stopping Banking AI Security Console processes"
+  for pid in $pids; do
+    cwd="$(process_cwd "$pid" || true)"
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [[ "$cwd" == "$CONSOLE_DIR"* ]] \
+      || [[ "$command" == *"bank-ai-security-console"* ]]; then
+      kill "$pid" 2>/dev/null || true
+    else
+      warn "Port listener PID $pid does not look like this demo; leaving it untouched: $command"
+    fi
+  done
+
+  for ((i=1; i<=20; i++)); do
+    if [[ -z "$(listener_pids_for_port 4174)" && -z "$(listener_pids_for_port 5173)" ]]; then
+      ok "UI/BFF stopped"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  for port in 4174 5173; do
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      cwd="$(process_cwd "$pid" || true)"
+      command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cwd" == "$CONSOLE_DIR"* ]] \
+        || [[ "$command" == *"bank-ai-security-console"* ]]; then
+        warn "Force-stopping remaining demo process PID $pid on port $port"
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done < <(listener_pids_for_port "$port")
+  done
+}
+
+stop_gateway_preserve_data() {
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "Docker is not installed; skipping Gateway container shutdown."
+    return 0
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    ok "Docker daemon is not running; Gateway ports are already unavailable."
+    return 0
+  fi
+
+  local project_containers
+  project_containers="$(docker ps -aq --filter label=com.docker.compose.project=ai-gateway 2>/dev/null || true)"
+  if [[ -z "$project_containers" ]]; then
+    ok "AI Gateway Compose project is not running"
+    return 0
+  fi
+
+  log "Stopping ai-gateway containers while preserving volumes"
+  (
+    cd "$GATEWAY_HOME"
+    if [[ -f configs/keys.env ]]; then
+      docker compose \
+        -p ai-gateway \
+        --env-file configs/keys.env \
+        down --remove-orphans
+    else
+      docker compose -p ai-gateway down --remove-orphans
+    fi
+  )
+
+  local leftovers
+  leftovers="$(docker ps -aq --filter label=com.docker.compose.project=ai-gateway 2>/dev/null || true)"
+  if [[ -n "$leftovers" ]]; then
+    warn "Removing leftover containers from Compose project ai-gateway"
+    # shellcheck disable=SC2086
+    docker rm -f $leftovers >/dev/null
+  fi
+  ok "AI Gateway stopped; controller-data volume preserved"
+}
+
+verify_core_ports_released() {
+  local port owner busy=false
+  for port in 4174 5173 8080 8081 8443 9002 9003 9090 9094 9011 9901; do
+    owner=""
+    if command -v lsof >/dev/null 2>&1; then
+      owner="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1 || true)"
+    fi
+    if [[ -n "$owner" ]]; then
+      warn "Port $port is still in use: $owner"
+      busy=true
+    fi
+  done
+  if [[ "$busy" == "false" ]]; then
+    ok "Demo UI/BFF and core Gateway ports are free"
+  else
+    warn "Some ports are still owned by processes outside the stopped demo."
+  fi
+}
+
+stop_full_demo() {
+  stop_console_processes
+  stop_gateway_preserve_data
+  verify_core_ports_released
+  printf '%s\n' \
+    "Stopped:" \
+    "  - Banking AI Security UI/BFF" \
+    "  - Docker Compose project ai-gateway" \
+    "Preserved:" \
+    "  - AI Workspace provider/proxy/gateway resources" \
+    "  - controller-data and other Docker volumes" \
+    "  - configs/keys.env and configs/workspace-secrets.env" \
+    "  - bank-ai-security-console/.env"
+}
+
+clean_local_runtime() {
+  stop_console_processes
+  ensure_docker
 
   log "Removing local AI Gateway containers and persisted Compose volumes"
   (
@@ -893,8 +1036,10 @@ clean_local_runtime() {
     rm -rf "$CONSOLE_DIR/node_modules"
   fi
 
+  verify_core_ports_released
   ok "Local demo runtime was cleaned"
-  printf '%s\n' \
+  printf '%s
+' \
     "Preserved:" \
     "  - AI Workspace provider/proxy/gateway resources" \
     "  - wso2apip-ai-gateway-1.1.0/configs/keys.env" \
@@ -920,7 +1065,22 @@ main() {
   local command="${1:-start}"
   case "$command" in
     start) ;;
+    gateway)
+      for cmd in curl jq python3 openssl shasum docker; do require "$cmd"; done
+      [[ -x "$ROOT_DIR/scripts/demo.sh" ]] || die "Missing executable scripts/demo.sh"
+      workspace_registration_present || die "No connected Gateway registration found. Create an AI Gateway in AI Workspace, then populate wso2apip-ai-gateway-1.1.0/configs/keys.env with GATEWAY_CONTROLPLANE_HOST and GATEWAY_REGISTRATION_TOKEN."
+      ensure_docker
+      start_gateway
+      printf '
+Gateway Controller and Runtime are healthy. Return to AI Workspace and wait for the gateway to show Active. Then create/deploy enterprise-openai and customer-ai-secure, and run ./run.sh.
+'
+      return 0
+      ;;
     check) CHECK_ONLY=true ;;
+    stop)
+      stop_full_demo
+      return 0
+      ;;
     clean)
       for cmd in curl docker; do require "$cmd"; done
       [[ -x "$ROOT_DIR/scripts/demo.sh" ]] || die "Missing executable scripts/demo.sh"
