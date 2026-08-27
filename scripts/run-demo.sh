@@ -23,6 +23,7 @@ READY_ATTEMPTS="${READY_ATTEMPTS:-90}"
 WORKSPACE_SETTLE_SECONDS="${WORKSPACE_SETTLE_SECONDS:-8}"
 API_KEY_SYNC_ATTEMPTS="${API_KEY_SYNC_ATTEMPTS:-20}"
 API_KEY_SYNC_RESTART_ATTEMPTS="${API_KEY_SYNC_RESTART_ATTEMPTS:-15}"
+POLICY_SYNC_ATTEMPTS="${POLICY_SYNC_ATTEMPTS:-15}"
 AUTO_RUN_UNIT_TESTS="${AUTO_RUN_UNIT_TESTS:-false}"
 DEMO_FORCE_BUILD="${DEMO_FORCE_BUILD:-false}"
 CHECK_ONLY="${CHECK_ONLY:-false}"
@@ -600,7 +601,8 @@ wait_for_proxy_key_runtime_sync() {
 }
 
 restart_runtime_for_xds_resync() {
-  warn "Fresh key has not reached the Runtime yet; restarting only gateway-runtime to force a new xDS snapshot."
+  local reason="${1:-Runtime state has not converged}"
+  warn "$reason; restarting only gateway-runtime to force a fresh xDS snapshot."
   (
     cd "$GATEWAY_HOME"
     docker compose \
@@ -610,6 +612,59 @@ restart_runtime_for_xds_resync() {
   )
   wait_for_url "Gateway Runtime" "$RUNTIME_READY_URL" || gateway_diagnostics
   sleep 3
+}
+
+runtime_proxy_policy_route_present() {
+  local expected_route="POST|/$PROXY_ID/v1/chat/completions|*"
+  (
+    cd "$GATEWAY_HOME"
+    docker compose \
+      -p ai-gateway \
+      --env-file configs/keys.env \
+      exec -T gateway-runtime \
+      curl -fsS http://127.0.0.1:9002/config_dump 2>/dev/null
+  ) | jq -e --arg route "$expected_route" '
+    .. | objects | select(.route_key? == $route)
+  ' >/dev/null 2>&1
+}
+
+wait_for_runtime_proxy_policy_route() {
+  local attempts="${1:-$POLICY_SYNC_ATTEMPTS}" label="${2:-proxy PolicyChainConfig}"
+  printf 'Waiting for %s in Gateway Runtime' "$label"
+  for ((i=1; i<=attempts; i++)); do
+    if runtime_proxy_policy_route_present; then
+      printf ' ready\n'
+      return 0
+    fi
+    printf '.'
+    sleep 2
+  done
+  printf ' timed out\n'
+  return 1
+}
+
+ensure_runtime_proxy_policy_route() {
+  if wait_for_runtime_proxy_policy_route "$POLICY_SYNC_ATTEMPTS" "customer-ai-secure policy chain"; then
+    ok "Runtime Policy Engine has the customer-ai-secure policy route"
+    return 0
+  fi
+
+  restart_runtime_for_xds_resync "customer-ai-secure exists in the Controller but its PolicyChainConfig is missing from the Runtime"
+
+  if wait_for_runtime_proxy_policy_route "$POLICY_SYNC_ATTEMPTS" "customer-ai-secure policy chain after Runtime resync"; then
+    ok "Runtime Policy Engine loaded the customer-ai-secure policy route after xDS resync"
+    return 0
+  fi
+
+  warn "Runtime still has no policy chain for POST|/$PROXY_ID/v1/chat/completions|* after restart."
+  (
+    cd "$GATEWAY_HOME"
+    docker compose \
+      -p ai-gateway \
+      --env-file configs/keys.env \
+      logs --since=3m --tail=160 --no-color gateway-runtime >&2 || true
+  )
+  die "Controller policy state did not converge into the Gateway Runtime Policy Engine."
 }
 
 positive_probe() {
@@ -772,6 +827,7 @@ ensure_proxy_key_and_guardrails() {
       rm -f "$NEGATIVE_RESPONSE_FILE"
       provider_key="$(load_or_prompt_provider_key)"
       repair_workspace_proxy "$provider_key"
+      ensure_runtime_proxy_policy_route
       status="$(negative_probe "$key")"
       [[ "$status" == "422" ]] || {
         cat "$NEGATIVE_RESPONSE_FILE" >&2 || true
@@ -821,6 +877,7 @@ validate_positive_path() {
     if [[ "$pstatus" == "200" ]] && provider_response_is_expected; then
       rm -f "$PROVIDER_RESPONSE_FILE"
       repair_workspace_proxy "$provider_key"
+      ensure_runtime_proxy_policy_route
       status="$(positive_probe "$key")"
       if [[ "$status" == "200" ]]; then
         rm -f "$POSITIVE_RESPONSE_FILE"
@@ -840,6 +897,7 @@ validate_positive_path() {
         ensure_provider_access_key
         provider_key="$(load_or_prompt_provider_key)"
         repair_workspace_proxy "$provider_key"
+        ensure_runtime_proxy_policy_route
         status="$(positive_probe "$key")"
         if [[ "$status" == "200" ]]; then
           rm -f "$POSITIVE_RESPONSE_FILE"
@@ -1124,6 +1182,7 @@ Gateway Controller and Runtime are healthy. Return to AI Workspace and wait for 
       log "Binding customer-ai-secure to the newly issued provider access key"
       repair_workspace_proxy "$(load_or_prompt_provider_key)"
     fi
+    ensure_runtime_proxy_policy_route
     ensure_proxy_key_and_guardrails
     validate_positive_path
     # One final state check catches a late control-plane overwrite after the smoke tests.
