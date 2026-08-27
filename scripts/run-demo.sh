@@ -18,11 +18,15 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
 PROXY_ID="${PROXY_ID:-customer-ai-secure}"
 WORKSPACE_PROVIDER_ID="${WORKSPACE_PROVIDER_ID:-enterprise-openai}"
 PROXY_HEADER="${PROXY_HEADER:-X-API-Key}"
+API_KEY_ISSUER="${API_KEY_ISSUER:-api-platform-devportal}"
 READY_ATTEMPTS="${READY_ATTEMPTS:-90}"
 WORKSPACE_SETTLE_SECONDS="${WORKSPACE_SETTLE_SECONDS:-8}"
+API_KEY_SYNC_ATTEMPTS="${API_KEY_SYNC_ATTEMPTS:-20}"
+API_KEY_SYNC_RESTART_ATTEMPTS="${API_KEY_SYNC_RESTART_ATTEMPTS:-15}"
 AUTO_RUN_UNIT_TESTS="${AUTO_RUN_UNIT_TESTS:-false}"
 DEMO_FORCE_BUILD="${DEMO_FORCE_BUILD:-false}"
 CHECK_ONLY="${CHECK_ONLY:-false}"
+PROVIDER_KEY_ROTATED=false
 CLEAN_CONSOLE_DEPS="${CLEAN_CONSOLE_DEPS:-false}"
 NEGATIVE_RESPONSE_FILE="${TMPDIR:-/tmp}/banking-demo-negative-$$.json"
 POSITIVE_RESPONSE_FILE="${TMPDIR:-/tmp}/banking-demo-positive-$$.json"
@@ -52,6 +56,12 @@ Useful environment variables:
   DEMO_FORCE_BUILD=true     Rebuild the custom Gateway images before starting
   AUTO_RUN_UNIT_TESTS=true  Run the console unit tests during startup
   CLEAN_CONSOLE_DEPS=true   Also remove bank-ai-security-console/node_modules during clean
+  API_KEY_ISSUER=value      Override the API-key issuer (default: api-platform-devportal)
+
+For a connected Workspace first run, keep configs/keys.env with the gateway registration
+host/token and deploy enterprise-openai + customer-ai-secure in AI Workspace. The runner
+creates correctly issued local provider/proxy keys, repairs the 19-policy chain, configures
+the console .env, waits for xDS, and validates 422/200 before starting the UI.
 
 The clean/fresh commands preserve AI Workspace cloud resources, gateway registration
 configuration, bank-ai-security-console/.env, and the locally saved provider access key.
@@ -79,6 +89,52 @@ for line in p.read_text().splitlines():
     print(v,end='')
     break
 PY
+}
+
+set_env_values() {
+  python3 - "$ENV_FILE" "$@" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+pairs = {}
+for item in sys.argv[2:]:
+    name, value = item.split("=", 1)
+    pairs[name] = value
+lines = path.read_text().splitlines() if path.exists() else []
+out = []
+for line in lines:
+    stripped = line.strip()
+    if stripped and not stripped.startswith("#") and "=" in stripped:
+        name = stripped.split("=", 1)[0].strip()
+        if name in pairs:
+            continue
+    out.append(line)
+while out and not out[-1].strip():
+    out.pop()
+out.extend(["", "# Managed by scripts/run-demo.sh"])
+for name, value in pairs.items():
+    out.append(f"{name}={value}")
+path.write_text("\n".join(out) + "\n")
+PY
+  chmod 600 "$ENV_FILE"
+}
+
+configure_workspace_console_defaults() {
+  set_env_values \
+    "DEMO_MODE=workspace" \
+    "WSO2_GATEWAY_URL=https://localhost:8443/$PROXY_ID/v1/chat/completions" \
+    "WSO2_API_KEY_HEADER=$PROXY_HEADER" \
+    "WSO2_API_KEY_PREFIX=" \
+    "WSO2_DEFAULT_MODEL=gpt-4o-mini" \
+    "WSO2_ALLOW_SELF_SIGNED=true"
+  ok "Configured bank-ai-security-console/.env for the connected Workspace proxy"
+}
+
+workspace_registration_present() {
+  local host token
+  host="$(file_env_value "$GATEWAY_HOME/configs/keys.env" GATEWAY_CONTROLPLANE_HOST || true)"
+  token="$(file_env_value "$GATEWAY_HOME/configs/keys.env" GATEWAY_REGISTRATION_TOKEN || true)"
+  [[ -n "$host" && -n "$token" ]]
 }
 
 save_workspace_provider_key() {
@@ -110,14 +166,151 @@ load_or_prompt_provider_key() {
   if [[ -z "$key" ]]; then
     key="$(file_env_value "$WORKSPACE_SECRETS_FILE" WORKSPACE_PROVIDER_ACCESS_KEY || true)"
   fi
-  if [[ -z "$key" ]]; then
-    printf 'A provider access key is needed once to self-heal the Workspace proxy.\n' >&2
-    read -r -s -p "Paste the enterprise-openai provider API key: " key
-    echo >&2
-  fi
-  [[ -n "$key" ]] || die "Provider access key cannot be empty."
-  save_workspace_provider_key "$key"
+  [[ -n "$key" ]] || die "Provider access key is not initialized. This is an internal startup error."
   printf '%s' "$key"
+}
+
+generate_provider_access_key() {
+  local stamp request response key
+  stamp="$(date +%Y%m%d%H%M%S)"
+  request="$(mktemp)"
+  response="$(mktemp)"
+  umask 077
+
+  jq -n \
+    --arg name "auto-provider-$stamp" \
+    --arg issuer "$API_KEY_ISSUER" \
+    '{name:$name, issuer:$issuer}' > "$request"
+
+  curl --fail-with-body -sS \
+    --max-time 10 \
+    -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+    -X POST "$CONTROLLER_URL/api/management/v0.9/llm-providers/$WORKSPACE_PROVIDER_ID/api-keys" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    --data-binary "@$request" > "$response"
+
+  key="$(jq -er --arg provider "$WORKSPACE_PROVIDER_ID" '
+    select(
+      .status == "success"
+      and .apiKey.status == "active"
+      and .apiKey.apiId == $provider
+      and (.apiKey.apiKey | type == "string" and length > 16)
+    )
+    | .apiKey.apiKey
+  ' "$response")" || {
+    cat "$response" >&2 || true
+    rm -f "$request" "$response"
+    die "Gateway did not return a usable provider API key."
+  }
+
+  rm -f "$request" "$response"
+  WORKSPACE_PROVIDER_ACCESS_KEY="$key"
+  save_workspace_provider_key "$key"
+  PROVIDER_KEY_ROTATED=true
+  ok "Created a local provider access key with issuer '$API_KEY_ISSUER'"
+}
+
+provider_response_is_expected() {
+  jq -e '.choices[0].message.content == "PROVIDER_OK"' "$PROVIDER_RESPONSE_FILE" >/dev/null 2>&1
+}
+
+wait_for_provider_key_runtime_sync() {
+  local key="$1" attempts="$2" label="${3:-provider API key}" status
+  printf 'Waiting for %s to reach Gateway Runtime' "$label"
+  for ((i=1; i<=attempts; i++)); do
+    status="$(provider_direct_probe "$key")"
+    case "$status" in
+      200)
+        if provider_response_is_expected; then
+          printf ' ready\n'
+          rm -f "$PROVIDER_RESPONSE_FILE"
+          return 0
+        fi
+        printf ' unexpected-response\n'
+        return 3
+        ;;
+      401|403)
+        if is_gateway_key_rejection "$PROVIDER_RESPONSE_FILE"; then
+          printf '.'
+          rm -f "$PROVIDER_RESPONSE_FILE"
+          sleep 2
+        else
+          printf ' upstream-auth-failed\n'
+          return 2
+        fi
+        ;;
+      *)
+        printf ' HTTP %s\n' "${status:-000}"
+        return 3
+        ;;
+    esac
+  done
+  printf ' timed out\n'
+  return 1
+}
+
+ensure_provider_access_key() {
+  local key="${WORKSPACE_PROVIDER_ACCESS_KEY:-}" status sync_rc
+  if [[ -z "$key" ]]; then
+    key="$(file_env_value "$WORKSPACE_SECRETS_FILE" WORKSPACE_PROVIDER_ACCESS_KEY || true)"
+  fi
+
+  if [[ -n "$key" ]]; then
+    status="$(provider_direct_probe "$key")"
+    if [[ "$status" == "200" ]] && provider_response_is_expected; then
+      rm -f "$PROVIDER_RESPONSE_FILE"
+      WORKSPACE_PROVIDER_ACCESS_KEY="$key"
+      save_workspace_provider_key "$key"
+      ok "Saved provider access key is valid"
+      return 0
+    fi
+
+    if [[ "$status" == "401" || "$status" == "403" ]] && is_gateway_key_rejection "$PROVIDER_RESPONSE_FILE"; then
+      warn "Saved provider access key is stale/invalid; creating a correctly issued local key."
+      rm -f "$PROVIDER_RESPONSE_FILE"
+      rm -f "$WORKSPACE_SECRETS_FILE"
+      WORKSPACE_PROVIDER_ACCESS_KEY=""
+    else
+      warn "Direct provider smoke test returned HTTP ${status:-000}."
+      cat "$PROVIDER_RESPONSE_FILE" >&2 || true
+      rm -f "$PROVIDER_RESPONSE_FILE"
+      if [[ "$status" == "401" || "$status" == "403" ]]; then
+        die "enterprise-openai accepted the gateway API key but the upstream OpenAI credential was rejected. Update the OpenAI credential in AI Workspace."
+      fi
+      die "enterprise-openai is not healthy; refusing to rotate keys blindly."
+    fi
+  else
+    warn "No usable provider access key is saved locally; creating one automatically."
+  fi
+
+  generate_provider_access_key
+  key="$WORKSPACE_PROVIDER_ACCESS_KEY"
+
+  if wait_for_provider_key_runtime_sync "$key" "$API_KEY_SYNC_ATTEMPTS" "new provider API key"; then
+    ok "Provider access key is active"
+    return 0
+  fi
+  sync_rc=$?
+
+  if [[ "$sync_rc" == "1" ]]; then
+    restart_runtime_for_xds_resync
+    if wait_for_provider_key_runtime_sync "$key" "$API_KEY_SYNC_RESTART_ATTEMPTS" "new provider API key after runtime resync"; then
+      ok "Provider access key is active after Runtime xDS resync"
+      return 0
+    fi
+    sync_rc=$?
+  fi
+
+  if [[ "$sync_rc" == "2" ]]; then
+    cat "$PROVIDER_RESPONSE_FILE" >&2 || true
+    rm -f "$PROVIDER_RESPONSE_FILE"
+    die "The Gateway accepted the provider key, but OpenAI rejected the configured upstream credential. Update enterprise-openai in AI Workspace."
+  fi
+
+  cat "$PROVIDER_RESPONSE_FILE" >&2 || true
+  rm -f "$PROVIDER_RESPONSE_FILE"
+  die "Provider API key did not become usable in the Gateway Runtime."
 }
 
 ensure_docker() {
@@ -370,6 +563,50 @@ JSON
   printf '%s' "$status"
 }
 
+wait_for_proxy_key_runtime_sync() {
+  local key="$1" attempts="$2" label="${3:-proxy API key}" status
+  printf 'Waiting for %s to reach Gateway Runtime' "$label"
+  for ((i=1; i<=attempts; i++)); do
+    status="$(negative_probe "$key")"
+    case "$status" in
+      422)
+        printf ' ready\n'
+        rm -f "$NEGATIVE_RESPONSE_FILE"
+        return 0
+        ;;
+      401|403)
+        printf '.'
+        rm -f "$NEGATIVE_RESPONSE_FILE"
+        sleep 2
+        ;;
+      200)
+        printf ' authenticated\n'
+        # The key is active, but the policy snapshot may still be converging.
+        return 2
+        ;;
+      *)
+        printf ' HTTP %s\n' "${status:-000}"
+        return 3
+        ;;
+    esac
+  done
+  printf ' timed out\n'
+  return 1
+}
+
+restart_runtime_for_xds_resync() {
+  warn "Fresh key has not reached the Runtime yet; restarting only gateway-runtime to force a new xDS snapshot."
+  (
+    cd "$GATEWAY_HOME"
+    docker compose \
+      -p ai-gateway \
+      --env-file configs/keys.env \
+      restart gateway-runtime
+  )
+  wait_for_url "Gateway Runtime" "$RUNTIME_READY_URL" || gateway_diagnostics
+  sleep 3
+}
+
 positive_probe() {
   local key="$1" body status
   body="$(mktemp)"
@@ -414,61 +651,40 @@ JSON
 }
 
 generate_or_regenerate_proxy_key() {
-  local stamp request tmp delegation old_name status
+  local stamp request tmp delegation
   stamp="$(date +%Y%m%d%H%M%S)"
-  request="$(mktemp)"; tmp="$KEY_FILE.tmp"
+  request="$(mktemp)"
+  tmp="$KEY_FILE.tmp"
   umask 077
 
-  old_name=""
-  if [[ -f "$KEY_FILE" ]]; then
-    old_name="$(jq -r '.apiKey.name // empty' "$KEY_FILE" 2>/dev/null || true)"
-  fi
+  jq -n \
+    --arg name "auto-recovery-$stamp" \
+    --arg issuer "$API_KEY_ISSUER" \
+    '{name:$name, issuer:$issuer}' > "$request"
 
-  if [[ -n "$old_name" ]]; then
-    status="$(curl -sS \
-      --max-time 10 \
-      -u "$ADMIN_USER:$ADMIN_PASSWORD" \
-      -o "$tmp" \
-      -w '%{http_code}' \
-      -X POST "$CONTROLLER_URL/api/management/v0.9/llm-proxies/$PROXY_ID/api-keys/$old_name/regenerate" \
-      -H 'Content-Type: application/json' \
-      -H 'Accept: application/json' \
-      --data-binary '{}' || true)"
-    if [[ "$status" == "200" || "$status" == "201" ]] \
-      && jq -e --arg proxy "$PROXY_ID" '
-        .status == "success"
-        and .apiKey.status == "active"
-        and .apiKey.apiId == $proxy
-        and (.apiKey.apiKey | type == "string" and length > 16)
-      ' "$tmp" >/dev/null 2>&1; then
-      mv "$tmp" "$KEY_FILE"
-      ok "Regenerated the existing local proxy key '$old_name'"
-    else
-      rm -f "$tmp"
-      old_name=""
-    fi
-  fi
+  curl --fail-with-body -sS \
+    --max-time 10 \
+    -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+    -X POST "$CONTROLLER_URL/api/management/v0.9/llm-proxies/$PROXY_ID/api-keys" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    --data-binary "@$request" > "$tmp"
 
-  if [[ -z "$old_name" ]]; then
-    jq -n --arg name "auto-recovery-$stamp" '{name:$name}' > "$request"
-    curl --fail-with-body -sS \
-      --max-time 10 \
-      -u "$ADMIN_USER:$ADMIN_PASSWORD" \
-      -X POST "$CONTROLLER_URL/api/management/v0.9/llm-proxies/$PROXY_ID/api-keys" \
-      -H 'Content-Type: application/json' \
-      -H 'Accept: application/json' \
-      --data-binary "@$request" > "$tmp"
-    jq -e --arg proxy "$PROXY_ID" '
-      .status == "success"
-      and .apiKey.status == "active"
-      and .apiKey.apiId == $proxy
-      and (.apiKey.apiKey | type == "string" and length > 16)
-    ' "$tmp" >/dev/null || { cat "$tmp" >&2; rm -f "$tmp" "$request"; die "Gateway did not return a usable proxy API key."; }
-    mv "$tmp" "$KEY_FILE"
-    ok "Created a new local proxy key"
-  fi
-  rm -f "$request" "$tmp" 2>/dev/null || true
+  jq -e --arg proxy "$PROXY_ID" '
+    .status == "success"
+    and .apiKey.status == "active"
+    and .apiKey.apiId == $proxy
+    and (.apiKey.apiKey | type == "string" and length > 16)
+  ' "$tmp" >/dev/null || {
+    cat "$tmp" >&2
+    rm -f "$tmp" "$request"
+    die "Gateway did not return a usable proxy API key."
+  }
+
+  mv "$tmp" "$KEY_FILE"
+  rm -f "$request"
   chmod 600 "$KEY_FILE"
+  ok "Created a new local proxy key with issuer '$API_KEY_ISSUER'"
 
   delegation="$(file_env_value "$ENV_FILE" DEMO_DELEGATION_CONTEXT_SECRET || true)"
   (
@@ -481,13 +697,55 @@ generate_or_regenerate_proxy_key() {
   ok "Synchronized the working proxy key into bank-ai-security-console/.env"
 }
 
+activate_new_proxy_key() {
+  local key="$1" sync_rc status
+
+  if wait_for_proxy_key_runtime_sync "$key" "$API_KEY_SYNC_ATTEMPTS" "fresh proxy API key"; then
+    ok "Fresh proxy key works and guardrails block correctly"
+    return 0
+  fi
+  sync_rc=$?
+
+  if [[ "$sync_rc" == "1" ]]; then
+    restart_runtime_for_xds_resync
+    if wait_for_proxy_key_runtime_sync "$key" "$API_KEY_SYNC_RESTART_ATTEMPTS" "fresh proxy API key after runtime resync"; then
+      ok "Fresh proxy key works after Runtime xDS resync"
+      return 0
+    fi
+    sync_rc=$?
+  fi
+
+  if [[ "$sync_rc" == "2" ]]; then
+    warn "Fresh key is authenticated, but the negative scenario was not blocked yet; waiting for the policy snapshot to converge."
+    for ((i=1; i<=10; i++)); do
+      sleep 2
+      status="$(negative_probe "$key")"
+      if [[ "$status" == "422" ]]; then
+        rm -f "$NEGATIVE_RESPONSE_FILE"
+        ok "Fresh proxy key and guardrail policy snapshot are active"
+        return 0
+      fi
+      rm -f "$NEGATIVE_RESPONSE_FILE"
+    done
+  fi
+
+  status="$(negative_probe "$key")"
+  warn "Negative probe after key synchronization returned HTTP $status"
+  cat "$NEGATIVE_RESPONSE_FILE" >&2 || true
+  rm -f "$NEGATIVE_RESPONSE_FILE"
+  die "Fresh proxy key/policy state did not converge in the Gateway Runtime."
+}
+
 ensure_proxy_key_and_guardrails() {
-  local key status
+  local key status provider_key
   key="$(load_proxy_key)"
+
   if [[ -z "$key" ]]; then
-    warn "No proxy key is saved in the console environment."
+    warn "No proxy key is saved in the console environment; creating one automatically."
     generate_or_regenerate_proxy_key
     key="$(load_proxy_key)"
+    activate_new_proxy_key "$key"
+    return 0
   fi
 
   status="$(negative_probe "$key")"
@@ -498,28 +756,23 @@ ensure_proxy_key_and_guardrails() {
       ;;
     401|403)
       rm -f "$NEGATIVE_RESPONSE_FILE"
-      warn "Saved proxy key is stale/invalid; rotating it locally."
+      warn "Saved proxy key is stale/invalid; creating a correctly issued local key."
       generate_or_regenerate_proxy_key
       key="$(load_proxy_key)"
-      status="$(negative_probe "$key")"
-      if [[ "$status" != "422" ]]; then
-        warn "Negative probe after key rotation returned HTTP $status"
-        cat "$NEGATIVE_RESPONSE_FILE" >&2 || true
-        rm -f "$NEGATIVE_RESPONSE_FILE"
-        die "Fresh proxy key did not produce the expected guardrail block."
-      fi
-      rm -f "$NEGATIVE_RESPONSE_FILE"
-      ok "Fresh proxy key works and guardrails block correctly"
+      activate_new_proxy_key "$key"
       ;;
     200)
       warn "Negative scenario reached the model (HTTP 200); reapplying the repo policy chain once."
       cat "$NEGATIVE_RESPONSE_FILE" >&2 || true
       rm -f "$NEGATIVE_RESPONSE_FILE"
-      local provider_key
       provider_key="$(load_or_prompt_provider_key)"
       repair_workspace_proxy "$provider_key"
       status="$(negative_probe "$key")"
-      [[ "$status" == "422" ]] || { cat "$NEGATIVE_RESPONSE_FILE" >&2 || true; rm -f "$NEGATIVE_RESPONSE_FILE"; die "Guardrails are still not executing after repair."; }
+      [[ "$status" == "422" ]] || {
+        cat "$NEGATIVE_RESPONSE_FILE" >&2 || true
+        rm -f "$NEGATIVE_RESPONSE_FILE"
+        die "Guardrails are still not executing after repair."
+      }
       rm -f "$NEGATIVE_RESPONSE_FILE"
       ok "Guardrail chain repaired and verified"
       ;;
@@ -554,38 +807,43 @@ validate_positive_path() {
   cat "$POSITIVE_RESPONSE_FILE" >&2 || true
   rm -f "$POSITIVE_RESPONSE_FILE"
 
+  # At this point the negative 422 probe has already proven proxy authentication.
+  # A 401/403/404 here therefore points to the proxy -> provider hop/binding.
   if [[ "$status" == "401" || "$status" == "403" || "$status" == "404" ]]; then
     provider_key="$(load_or_prompt_provider_key)"
     pstatus="$(provider_direct_probe "$provider_key")"
-    if [[ "$pstatus" != "200" ]]; then
-      warn "Direct provider smoke test returned HTTP ${pstatus:-000}."
-      cat "$PROVIDER_RESPONSE_FILE" >&2 || true
-      rm -f "$PROVIDER_RESPONSE_FILE"
-      if [[ "$pstatus" == "401" || "$pstatus" == "403" ]]; then
-        if is_gateway_key_rejection "$PROVIDER_RESPONSE_FILE"; then
-          warn "Saved provider access key is no longer valid."
-          WORKSPACE_PROVIDER_ACCESS_KEY=""
-          rm -f "$WORKSPACE_SECRETS_FILE"
-          provider_key="$(load_or_prompt_provider_key)"
-          pstatus="$(provider_direct_probe "$provider_key")"
-        else
-          die "enterprise-openai accepted the provider hop but the upstream provider returned HTTP $pstatus. Check/update the real OpenAI credential in AI Workspace."
-        fi
-      fi
-    fi
-    if [[ "$pstatus" == "200" ]]; then
+
+    if [[ "$pstatus" == "200" ]] && provider_response_is_expected; then
       rm -f "$PROVIDER_RESPONSE_FILE"
       repair_workspace_proxy "$provider_key"
       status="$(positive_probe "$key")"
       if [[ "$status" == "200" ]]; then
         rm -f "$POSITIVE_RESPONSE_FILE"
-        ok "Positive path recovered after restoring proxy→provider auth/rewrite"
+        ok "Positive path recovered after restoring proxy -> provider auth/rewrite"
         return 0
       fi
       cat "$POSITIVE_RESPONSE_FILE" >&2 || true
       rm -f "$POSITIVE_RESPONSE_FILE"
     else
-      rm -f "$PROVIDER_RESPONSE_FILE" 2>/dev/null || true
+      warn "Direct provider smoke test returned HTTP ${pstatus:-000}."
+      cat "$PROVIDER_RESPONSE_FILE" >&2 || true
+      if [[ "$pstatus" == "401" || "$pstatus" == "403" ]] && is_gateway_key_rejection "$PROVIDER_RESPONSE_FILE"; then
+        rm -f "$PROVIDER_RESPONSE_FILE"
+        warn "Provider key unexpectedly became invalid; rotating it and rebinding the proxy."
+        rm -f "$WORKSPACE_SECRETS_FILE"
+        WORKSPACE_PROVIDER_ACCESS_KEY=""
+        ensure_provider_access_key
+        provider_key="$(load_or_prompt_provider_key)"
+        repair_workspace_proxy "$provider_key"
+        status="$(positive_probe "$key")"
+        if [[ "$status" == "200" ]]; then
+          rm -f "$POSITIVE_RESPONSE_FILE"
+          ok "Positive path recovered after provider-key rotation"
+          return 0
+        fi
+      else
+        rm -f "$PROVIDER_RESPONSE_FILE"
+      fi
     fi
   fi
 
@@ -687,12 +945,25 @@ main() {
 
   local mode
   mode="$(file_env_value "$ENV_FILE" DEMO_MODE || true)"
-  [[ -n "$mode" ]] || mode="standalone"
+  if workspace_registration_present; then
+    if [[ "$mode" != "workspace" ]]; then
+      log "Connected gateway registration detected; selecting Workspace mode automatically"
+    fi
+    configure_workspace_console_defaults
+    mode="workspace"
+  else
+    [[ -n "$mode" ]] || mode="standalone"
+  fi
 
   if [[ "$mode" == "workspace" ]]; then
     log "Recovering AI Workspace-connected demo"
     wait_for_workspace_resources
+    ensure_provider_access_key
     ensure_workspace_chain
+    if [[ "$PROVIDER_KEY_ROTATED" == "true" ]]; then
+      log "Binding customer-ai-secure to the newly issued provider access key"
+      repair_workspace_proxy "$(load_or_prompt_provider_key)"
+    fi
     ensure_proxy_key_and_guardrails
     validate_positive_path
     # One final state check catches a late control-plane overwrite after the smoke tests.
